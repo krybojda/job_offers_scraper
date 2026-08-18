@@ -43,6 +43,8 @@ services:
     networks:
       - jobs-network
 
+    command: ["python", "scraper.py"]
+
 
   web:
     build:
