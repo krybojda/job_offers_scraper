@@ -14,17 +14,11 @@ from playwright.sync_api import (
 )
 
 
-# ==========================================
-# KONFIGURACJA
-# ==========================================
-
-# Interwał między pełnymi przebiegami w trybie ciągłym.
-# 3600 = 1 godzina.
 SCRAPE_INTERVAL = 3600
 
-# Losowa przerwa między kolejnymi wyszukiwaniami.
-MIN_DELAY = 10
-MAX_DELAY = 20
+# Przerwa między kolejnymi wyszukiwaniami.
+MIN_DELAY = 20
+MAX_DELAY = 40
 
 BASE_URL = "https://justjoin.it"
 
@@ -37,13 +31,12 @@ USER_AGENT = (
 )
 
 
-# ==========================================
+# =========================================================
 # MYSQL
-# ==========================================
+# =========================================================
 
 def get_db_connection():
     """Tworzy połączenie z MySQL."""
-
     return mysql.connector.connect(
         host=os.environ["DB_HOST"],
         port=int(os.environ["DB_PORT"]),
@@ -54,10 +47,7 @@ def get_db_connection():
 
 
 def wait_for_mysql(max_attempts=10, delay=3):
-    """
-    Czeka na dostępność MySQL.
-    Zwraca True po poprawnym połączeniu.
-    """
+    """Czeka na dostępność MySQL."""
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -82,9 +72,9 @@ def wait_for_mysql(max_attempts=10, delay=3):
     return False
 
 
-# ==========================================
+# =========================================================
 # PLIKI KONFIGURACYJNE
-# ==========================================
+# =========================================================
 
 def load_keywords():
     """
@@ -109,16 +99,16 @@ def load_keywords():
             ]
 
     except FileNotFoundError:
-        print("BŁĄD: Nie znaleziono pliku keywords.txt")
+        print(
+            "BŁĄD: Nie znaleziono pliku keywords.txt"
+        )
         raise
 
 
 def load_ignored_keywords():
     """
-    Wczytuje ignorowane słowa/frazy z
-    ignored_keywords.txt.
-
-    Puste linie i komentarze są ignorowane.
+    Wczytuje ignorowane słowa i frazy
+    z ignored_keywords.txt.
     """
 
     try:
@@ -136,26 +126,20 @@ def load_ignored_keywords():
             ]
 
     except FileNotFoundError:
-        # Brak pliku oznacza brak filtrów ignorowania.
         return []
 
 
 def is_ignored_job(title, ignored_keywords):
     """
-    Sprawdza, czy tytuł oferty zawiera ignorowane
-    słowo lub frazę.
+    Sprawdza, czy tytuł zawiera ignorowane
+    słowo albo frazę.
 
-    Pojedyncze słowa są dopasowywane jako całe słowa.
+    Pojedyncze słowa:
+        lead -> pasuje do "Team Lead"
+        lead -> NIE pasuje do "Leadership"
 
-    Przykład:
-        lead → pasuje do "DevOps Team Lead"
-        lead → NIE pasuje do "Leadership Engineer"
-
-    Frazy zawierające spacje są dopasowywane jako
-    dokładny fragment tekstu.
-
-    Przykład:
-        team lead → pasuje do "DevOps Team Lead"
+    Frazy:
+        team lead -> pasuje do "DevOps Team Lead"
     """
 
     if not title or not ignored_keywords:
@@ -170,10 +154,8 @@ def is_ignored_job(title, ignored_keywords):
         if not keyword:
             continue
 
-        # --------------------------------------
-        # FRAZA
-        # --------------------------------------
-
+        # Fraza, np.:
+        # team lead
         if " " in keyword:
 
             if keyword in title_lower:
@@ -181,26 +163,29 @@ def is_ignored_job(title, ignored_keywords):
 
             continue
 
-        # --------------------------------------
-        # POJEDYNCZE SŁOWO
-        # --------------------------------------
-
+        # Pojedyncze słowo:
+        # lead
         pattern = rf"\b{re.escape(keyword)}\b"
 
-        if re.search(pattern, title_lower):
+        if re.search(
+            pattern,
+            title_lower,
+        ):
             return True
 
     return False
 
 
-# ==========================================
-# IDENTYFIKATOR OFERTY
-# ==========================================
+# =========================================================
+# IDENTYFIKACJA OFERTY
+# =========================================================
 
 def generate_source_id(url):
     """
     Tworzy stabilny identyfikator oferty
-    na podstawie jej URL.
+    na podstawie URL.
+
+    Parametry po '?' są pomijane.
     """
 
     normalized_url = (
@@ -214,14 +199,13 @@ def generate_source_id(url):
     ).hexdigest()
 
 
-# ==========================================
+# =========================================================
 # ZAPIS DO MYSQL
-# ==========================================
+# =========================================================
 
 def save_job(job):
     """
-    Dodaje nową ofertę lub aktualizuje
-    istniejącą.
+    Dodaje nową ofertę albo aktualizuje istniejącą.
 
     Unikalność:
         portal + source_id
@@ -272,7 +256,6 @@ def save_job(job):
                 NOW(),
                 1
             )
-
             ON DUPLICATE KEY UPDATE
                 title = VALUES(title),
                 company = VALUES(company),
@@ -306,14 +289,10 @@ def save_job(job):
 
         connection.commit()
 
-        # mysql.connector:
-        # rowcount == 1 -> INSERT
-        # rowcount == 2 -> UPDATE
         if cursor.rowcount == 1:
             print(
                 f"[NOWA] {job['title']}"
             )
-
         else:
             print(
                 f"[AKTUALIZACJA] {job['title']}"
@@ -323,13 +302,13 @@ def save_job(job):
         connection.close()
 
 
-# ==========================================
-# POMOCNICZE
-# ==========================================
+# =========================================================
+# TEKST
+# =========================================================
 
 def clean_text(value):
     """
-    Czyści tekst ze zbędnych spacji i nowych linii.
+    Normalizuje białe znaki.
     """
 
     if not value:
@@ -339,26 +318,109 @@ def clean_text(value):
         value.split()
     )
 
-    return (
-        value
-        if value
-        else None
+    return value if value else None
+
+
+# =========================================================
+# TYTUŁ OFERTY
+# =========================================================
+
+def extract_candidate_title(item):
+    """
+    Próbuje znaleźć tytuł oferty.
+
+    Kolejność:
+    1. headingi,
+    2. aria-label,
+    3. title atrybutu,
+    4. tekst linku,
+    5. pierwszy sensowny wiersz karty.
+    """
+
+    headings = (
+        item.get("headings")
+        or []
     )
 
+    # -----------------------------------------
+    # Headingi
+    # -----------------------------------------
 
-# ==========================================
-# ODCZYT KARTY OFERTY
-# ==========================================
+    for text in headings:
 
-def extract_offer_from_link(link, keyword):
+        text = clean_text(text)
+
+        if text:
+            return text
+
+    # -----------------------------------------
+    # aria-label
+    # -----------------------------------------
+
+    aria_label = clean_text(
+        item.get("ariaLabel")
+    )
+
+    if aria_label:
+        return aria_label
+
+    # -----------------------------------------
+    # title atrybutu
+    # -----------------------------------------
+
+    link_title = clean_text(
+        item.get("linkTitle")
+    )
+
+    if link_title:
+        return link_title
+
+    # -----------------------------------------
+    # tekst linku
+    # -----------------------------------------
+
+    link_text = clean_text(
+        item.get("linkText")
+    )
+
+    if link_text:
+        return link_text
+
+    # -----------------------------------------
+    # awaryjnie tekst karty
+    # -----------------------------------------
+
+    card_text = clean_text(
+        item.get("cardText")
+    )
+
+    if card_text:
+
+        lines = [
+            clean_text(line)
+            for line in card_text.split("\n")
+            if clean_text(line)
+        ]
+
+        if lines:
+            return lines[0]
+
+    return None
+
+
+# =========================================================
+# NORMALIZACJA POJEDYNCZEJ OFERTY
+# =========================================================
+
+def extract_job_from_raw_item(item, keyword):
     """
-    Odczytuje podstawowe dane z karty oferty
-    znajdującej się na stronie wyników.
-
-    Nie otwiera strony szczegółowej oferty.
+    Zamienia surowy rekord pobrany z DOM
+    na rekord gotowy do zapisania w MySQL.
     """
 
-    href = link.get_attribute("href")
+    href = clean_text(
+        item.get("href")
+    )
 
     if not href:
         return None
@@ -375,80 +437,26 @@ def extract_offer_from_link(link, keyword):
         url
     )
 
-    # --------------------------------------
-    # TEKST KARTY
-    # --------------------------------------
-
-    card_text = None
-
-    candidate_selectors = [
-        "xpath=ancestor::article[1]",
-        "xpath=ancestor::li[1]",
-        "xpath=ancestor::div[@role='article'][1]",
-    ]
-
-    for selector in candidate_selectors:
-
-        try:
-            locator = link.locator(
-                selector
-            )
-
-            if locator.count() > 0:
-
-                text = locator.inner_text(
-                    timeout=2000
-                )
-
-                text = clean_text(
-                    text
-                )
-
-                if text:
-                    card_text = text
-                    break
-
-        except Exception:
-            continue
-
-    if not card_text:
-
-        try:
-            card_text = clean_text(
-                link
-                .locator("xpath=..")
-                .inner_text(timeout=2000)
-            )
-
-        except Exception:
-
-            card_text = clean_text(
-                link.inner_text(
-                    timeout=2000
-                )
-            )
-
-    # --------------------------------------
+    # -----------------------------------------
     # TYTUŁ
-    # --------------------------------------
+    # -----------------------------------------
 
-    title = clean_text(
-        link.inner_text(
-            timeout=2000
-        )
+    title = extract_candidate_title(
+        item
     )
 
     if not title:
         return None
 
-    # --------------------------------------
-    # POZOSTAŁE POLA
-    # --------------------------------------
+    # -----------------------------------------
+    # TEKST KARTY
+    # -----------------------------------------
 
-    company = None
-    location = None
-    work_mode = None
-    salary = None
+    card_text = clean_text(
+        item.get("cardText")
+    )
+
+    lines = []
 
     if card_text:
 
@@ -458,95 +466,121 @@ def extract_offer_from_link(link, keyword):
             if clean_text(line)
         ]
 
-        # ----------------------------------
-        # TRYB PRACY
-        # ----------------------------------
+    # -----------------------------------------
+    # PUSTE POLA
+    # -----------------------------------------
 
-        for line in lines:
+    company = None
+    location = None
+    work_mode = None
+    salary = None
 
-            if line in (
-                "Remote",
-                "Hybrid",
-                "Office",
-            ):
+    # -----------------------------------------
+    # TRYB PRACY
+    # -----------------------------------------
 
-                work_mode = line
-                break
+    for line in lines:
 
-        # ----------------------------------
-        # WYNAGRODZENIE
-        # ----------------------------------
+        normalized = line.lower()
 
-        for line in lines:
+        if normalized in {
+            "remote",
+            "hybrid",
+            "office",
+        }:
 
-            if any(
-                token in line
-                for token in (
-                    "USD",
-                    "EUR",
-                    "PLN",
-                    "GBP",
-                    "CHF",
-                    "/month",
-                    "/h",
-                    "month",
-                )
-            ):
+            work_mode = line
 
-                salary = line
-                break
+            break
 
-        # ----------------------------------
-        # LOKALIZACJA
-        # ----------------------------------
+    # -----------------------------------------
+    # WYNAGRODZENIE
+    # -----------------------------------------
 
-        mode_index = None
+    salary_tokens = (
+        "usd",
+        "eur",
+        "pln",
+        "gbp",
+        "chf",
+        "/month",
+        "/h",
+        "month",
+    )
 
-        if work_mode:
+    for line in lines:
 
-            try:
-                mode_index = lines.index(
-                    work_mode
-                )
+        line_lower = line.lower()
 
-            except ValueError:
-                pass
-
-        if (
-            mode_index is not None
-            and mode_index > 0
+        if any(
+            token in line_lower
+            for token in salary_tokens
         ):
 
-            location = (
-                lines[mode_index - 1]
+            salary = line
+
+            break
+
+    # -----------------------------------------
+    # LOKALIZACJA
+    # -----------------------------------------
+
+    if work_mode:
+
+        try:
+
+            mode_index = lines.index(
+                work_mode
             )
 
-            if location == title:
-                location = None
+            if mode_index > 0:
 
-        # ----------------------------------
-        # FIRMA
-        # ----------------------------------
+                candidate = lines[
+                    mode_index - 1
+                ]
 
-        for line in lines[:8]:
+                if (
+                    candidate != title
+                    and candidate != salary
+                ):
 
-            if (
-                line != title
-                and line != location
-                and line not in (
-                    "Remote",
-                    "Hybrid",
-                    "Office",
-                )
-                and len(line) > 1
-            ):
+                    location = candidate
 
-                company = line
-                break
+        except ValueError:
+            pass
 
-    # --------------------------------------
+    # -----------------------------------------
+    # FIRMA
+    # -----------------------------------------
+
+    ignored_lines = {
+        title,
+        location,
+        salary,
+        work_mode,
+        "Remote",
+        "Hybrid",
+        "Office",
+        "New",
+        "Super offer",
+        "1-click Apply",
+    }
+
+    for line in lines:
+
+        if line in ignored_lines:
+            continue
+
+        if len(line) <= 1:
+            continue
+
+        company = line
+
+        break
+
+    # -----------------------------------------
     # REKORD
-    # --------------------------------------
+    # -----------------------------------------
 
     return {
         "portal": "justjoin",
@@ -562,26 +596,27 @@ def extract_offer_from_link(link, keyword):
     }
 
 
-# ==========================================
+# =========================================================
 # URL JUST JOIN IT
-# ==========================================
+# =========================================================
 
 def build_justjoin_url(keyword):
     """
     Buduje URL wyszukiwania Just Join IT.
 
     Pojedyncze słowo:
-        /all-locations/devops
+        /job-offers/all-locations/devops
 
     Fraza:
-        /all-locations/devops?q=devops%20engineer%40keyword
+        /job-offers/all-locations/devops
+        ?q=devops%20engineer%40keyword
     """
 
     normalized = keyword.strip()
 
-    # --------------------------------------
+    # -----------------------------------------
     # POJEDYNCZE SŁOWO
-    # --------------------------------------
+    # -----------------------------------------
 
     if " " not in normalized:
 
@@ -594,9 +629,9 @@ def build_justjoin_url(keyword):
             f"all-locations/{slug}"
         )
 
-    # --------------------------------------
+    # -----------------------------------------
     # FRAZA
-    # --------------------------------------
+    # -----------------------------------------
 
     encoded = quote(
         normalized
@@ -609,13 +644,17 @@ def build_justjoin_url(keyword):
     )
 
 
-# ==========================================
+# =========================================================
 # SCRAPOWANIE JUST JOIN IT
-# ==========================================
+# =========================================================
 
 def scrape_justjoin_page(page, keyword):
     """
     Pobiera jedną stronę wyników Just Join IT.
+
+    Dane są najpierw pobierane z DOM do zwykłej
+    listy Python. Nie iterujemy później po dynamicznych
+    locatorach nth().
     """
 
     url = build_justjoin_url(
@@ -630,9 +669,9 @@ def scrape_justjoin_page(page, keyword):
         f"URL: {url}"
     )
 
-    # --------------------------------------
+    # -----------------------------------------
     # OTWARCIE STRONY
-    # --------------------------------------
+    # -----------------------------------------
 
     try:
 
@@ -642,9 +681,9 @@ def scrape_justjoin_page(page, keyword):
             timeout=60000,
         )
 
-        # Czekamy na wyrenderowanie JS.
+        # Czekamy na renderowanie JS.
         page.wait_for_timeout(
-            5000
+            7000
         )
 
     except PlaywrightTimeoutError:
@@ -656,15 +695,13 @@ def scrape_justjoin_page(page, keyword):
 
         return []
 
-    current_url = page.url
-
     print(
-        f"Załadowany URL: {current_url}"
+        f"Załadowany URL: {page.url}"
     )
 
-    # --------------------------------------
-    # LINKI DO OFERT
-    # --------------------------------------
+    # -----------------------------------------
+    # CZEKAJ NA OFERTY
+    # -----------------------------------------
 
     try:
 
@@ -683,43 +720,140 @@ def scrape_justjoin_page(page, keyword):
 
         return []
 
-    links = page.locator(
-        "a[href*='/job-offer/']"
-    )
+    # -----------------------------------------
+    # ODCZYT DOM JEDNORAZOWO
+    # -----------------------------------------
 
-    count = links.count()
+    raw_jobs = page.evaluate(
+        """
+        () => {
+            const links = Array.from(
+                document.querySelectorAll(
+                    "a[href*='/job-offer/']"
+                )
+            );
+
+            return links
+                .map((link) => {
+
+                    const href =
+                        link.getAttribute("href");
+
+                    let card =
+                        link.closest("article") ||
+                        link.closest("li") ||
+                        link.parentElement;
+
+                    if (!card) {
+                        return null;
+                    }
+
+                    const headings =
+                        Array.from(
+                            card.querySelectorAll(
+                                "h1, h2, h3, h4"
+                            )
+                        )
+                        .map(
+                            (el) =>
+                                (el.innerText || "")
+                                    .trim()
+                        )
+                        .filter(Boolean);
+
+                    return {
+                        href: href || "",
+                        linkText:
+                            (link.innerText || "")
+                                .trim(),
+                        linkTitle:
+                            link.getAttribute("title")
+                            || "",
+                        ariaLabel:
+                            link.getAttribute(
+                                "aria-label"
+                            )
+                            || "",
+                        headings: headings,
+                        cardText:
+                            (card.innerText || "")
+                                .trim()
+                    };
+                })
+                .filter(Boolean);
+        }
+        """
+    )
 
     print(
-        f"Znaleziono elementów z "
-        f"linkiem ofert: {count}"
+        "Znaleziono elementów z linkiem ofert: "
+        f"{len(raw_jobs)}"
     )
+
+    if not raw_jobs:
+        return []
+
+    # -----------------------------------------
+    # DEBUG PIERWSZEGO REKORDU
+    # -----------------------------------------
+
+    first = raw_jobs[0]
+
+    print(
+        "\n--- DEBUG PIERWSZEJ OFERTY ---"
+    )
+
+    print(
+        f"href: {first.get('href')}"
+    )
+
+    print(
+        f"linkText: {first.get('linkText')}"
+    )
+
+    print(
+        f"linkTitle: {first.get('linkTitle')}"
+    )
+
+    print(
+        f"ariaLabel: {first.get('ariaLabel')}"
+    )
+
+    print(
+        f"headings: {first.get('headings')}"
+    )
+
+    print(
+        "cardText: "
+        f"{first.get('cardText', '')[:800]}"
+    )
+
+    print(
+        "--- KONIEC DEBUG ---\n"
+    )
+
+    # -----------------------------------------
+    # NORMALIZACJA
+    # -----------------------------------------
 
     jobs = []
 
     seen = set()
 
-    # --------------------------------------
-    # ODCZYT OFERT
-    # --------------------------------------
-
-    for index in range(count):
-
-        link = links.nth(
-            index
-        )
+    for item in raw_jobs:
 
         try:
 
-            job = extract_offer_from_link(
-                link,
+            job = extract_job_from_raw_item(
+                item,
                 keyword,
             )
 
         except Exception as error:
 
             print(
-                f"[WARN] Nie udało się "
-                f"odczytać oferty #{index}: "
+                "[WARN] Błąd podczas "
+                "przetwarzania jednej oferty: "
                 f"{error}"
             )
 
@@ -728,9 +862,9 @@ def scrape_justjoin_page(page, keyword):
         if not job:
             continue
 
-        # ----------------------------------
+        # -----------------------------------------
         # DEDUPLIKACJA
-        # ----------------------------------
+        # -----------------------------------------
 
         if job["source_id"] in seen:
             continue
@@ -744,16 +878,16 @@ def scrape_justjoin_page(page, keyword):
         )
 
     print(
-        f"Unikalnych ofert do "
-        f"przetworzenia: {len(jobs)}"
+        "Unikalnych ofert do przetworzenia: "
+        f"{len(jobs)}"
     )
 
     return jobs
 
 
-# ==========================================
-# GŁÓWNY PRZEBIEG
-# ==========================================
+# =========================================================
+# PEŁNY PRZEBIEG
+# =========================================================
 
 def run_scrape():
 
@@ -769,9 +903,9 @@ def run_scrape():
         "========================================"
     )
 
-    # --------------------------------------
+    # -----------------------------------------
     # SŁOWA WYSZUKIWANIA
-    # --------------------------------------
+    # -----------------------------------------
 
     keywords = load_keywords()
 
@@ -785,16 +919,16 @@ def run_scrape():
             f"  - {keyword}"
         )
 
-    # --------------------------------------
+    # -----------------------------------------
     # SŁOWA IGNOROWANE
-    # --------------------------------------
+    # -----------------------------------------
 
     ignored_keywords = (
         load_ignored_keywords()
     )
 
     print(
-        f"Ignorowane słowa/frazy "
+        "Ignorowane słowa/frazy "
         f"({len(ignored_keywords)}):"
     )
 
@@ -804,9 +938,9 @@ def run_scrape():
             f"  - {keyword}"
         )
 
-    # --------------------------------------
+    # -----------------------------------------
     # MYSQL
-    # --------------------------------------
+    # -----------------------------------------
 
     if not wait_for_mysql():
 
@@ -818,9 +952,9 @@ def run_scrape():
     total_saved = 0
     total_ignored = 0
 
-    # --------------------------------------
+    # -----------------------------------------
     # PLAYWRIGHT
-    # --------------------------------------
+    # -----------------------------------------
 
     with sync_playwright() as playwright:
 
@@ -845,9 +979,9 @@ def run_scrape():
                 keywords
             ):
 
-                # ----------------------------------
-                # PRZERWA MIĘDZY WYSZUKIWANIAMI
-                # ----------------------------------
+                # -----------------------------------------
+                # PRZERWA
+                # -----------------------------------------
 
                 if index > 0:
 
@@ -857,8 +991,8 @@ def run_scrape():
                     )
 
                     print(
-                        f"\nPrzerwa przed kolejnym "
-                        f"wyszukiwaniem: "
+                        "\nPrzerwa przed "
+                        "kolejnym wyszukiwaniem: "
                         f"{delay:.1f} s"
                     )
 
@@ -866,9 +1000,9 @@ def run_scrape():
                         delay
                     )
 
-                # ----------------------------------
+                # -----------------------------------------
                 # SCRAPING
-                # ----------------------------------
+                # -----------------------------------------
 
                 try:
 
@@ -883,9 +1017,9 @@ def run_scrape():
                         jobs
                     )
 
-                    # ------------------------------
-                    # FILTROWANIE I ZAPIS
-                    # ------------------------------
+                    # -----------------------------------------
+                    # FILTROWANIE + ZAPIS
+                    # -----------------------------------------
 
                     for job in jobs:
 
@@ -895,7 +1029,7 @@ def run_scrape():
                         ):
 
                             print(
-                                f"[IGNORUJ] "
+                                "[IGNORUJ] "
                                 f"{job['title']}"
                             )
 
@@ -912,7 +1046,7 @@ def run_scrape():
                 except Exception as error:
 
                     print(
-                        f"[ERROR] Just Join IT "
+                        "[ERROR] Just Join IT "
                         f"dla '{keyword}': "
                         f"{error}"
                     )
@@ -922,9 +1056,9 @@ def run_scrape():
             context.close()
             browser.close()
 
-    # --------------------------------------
+    # -----------------------------------------
     # PODSUMOWANIE
-    # --------------------------------------
+    # -----------------------------------------
 
     print(
         "\n========================================"
@@ -943,7 +1077,7 @@ def run_scrape():
     )
 
     print(
-        f"Zapisano/zaaktualizowano: "
+        "Zapisano/zaaktualizowano: "
         f"{total_saved}"
     )
 
@@ -956,9 +1090,9 @@ def run_scrape():
     )
 
 
-# ==========================================
+# =========================================================
 # ARGUMENTY
-# ==========================================
+# =========================================================
 
 def parse_args():
 
@@ -988,9 +1122,9 @@ def parse_args():
     return parser.parse_args()
 
 
-# ==========================================
+# =========================================================
 # MAIN
-# ==========================================
+# =========================================================
 
 def main():
 
@@ -1008,9 +1142,9 @@ def main():
         "========================================"
     )
 
-    # --------------------------------------
+    # -----------------------------------------
     # JEDEN PRZEBIEG
-    # --------------------------------------
+    # -----------------------------------------
 
     if args.once:
 
@@ -1022,9 +1156,9 @@ def main():
 
         return
 
-    # --------------------------------------
+    # -----------------------------------------
     # TRYB CIĄGŁY
-    # --------------------------------------
+    # -----------------------------------------
 
     print(
         "Tryb: CIĄGŁY"
@@ -1044,7 +1178,7 @@ def main():
         except Exception as error:
 
             print(
-                f"BŁĄD PODCZAS PRZEBIEGU: "
+                "BŁĄD PODCZAS PRZEBIEGU: "
                 f"{error}"
             )
 
@@ -1058,9 +1192,9 @@ def main():
         )
 
 
-# ==========================================
+# =========================================================
 # START
-# ==========================================
+# =========================================================
 
 if __name__ == "__main__":
     main()
