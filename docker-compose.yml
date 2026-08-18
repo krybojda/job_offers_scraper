@@ -1,0 +1,80 @@
+services:
+
+  mysql:
+    image: mysql:8.4
+    container_name: jobs-mysql
+    restart: unless-stopped
+
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: Europe/Warsaw
+
+    volumes:
+      - jobs_mysql_data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+    networks:
+      - jobs-network
+
+
+  scraper:
+    build:
+      context: ./scraper
+    container_name: jobs-scraper
+    restart: unless-stopped
+
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${MYSQL_DATABASE}
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: Europe/Warsaw
+
+    depends_on:
+      - mysql
+
+    volumes:
+      - ./scraper:/app
+
+    networks:
+      - jobs-network
+
+
+  web:
+    build:
+      context: ./web
+    container_name: jobs-web
+    restart: unless-stopped
+
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${MYSQL_DATABASE}
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: Europe/Warsaw
+
+    depends_on:
+      - mysql
+
+    ports:
+      - "8080:80"
+
+    volumes:
+      - ./web:/var/www/html
+
+    networks:
+      - jobs-network
+
+
+volumes:
+  jobs_mysql_data:
+
+
+networks:
+  jobs-network:
+    driver: bridge
