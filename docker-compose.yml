@@ -39,6 +39,7 @@ services:
 
     volumes:
       - ./scraper:/app
+      - jobs-scraper-state:/app/state
 
     networks:
       - jobs-network
@@ -75,6 +76,7 @@ services:
 
 volumes:
   jobs_mysql_data:
+  jobs-scraper-state:
 
 
 networks:
