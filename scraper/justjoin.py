@@ -1,27 +1,35 @@
 import re
+from datetime import datetime
 from urllib.parse import quote, urljoin
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError # type: ignore
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from config import JUSTJOIN_BASE_URL
 from utils import clean_text, generate_source_id
 
 
+def clean_lines(value):
+    """
+    Czyści tekst, ale zachowuje podział na linie.
+
+    Jest to ważne przy parsowaniu kart Just Join,
+    ponieważ kolejność linii określa znaczenie danych.
+    """
+
+    if not value:
+        return []
+
+    lines = []
+
+    for line in value.splitlines():
+        line = " ".join(line.split()).strip()
+
+        if line:
+            lines.append(line)
+
+    return lines
+
 def clean_location(lines):
-    """
-    Próbuje znaleźć lokalizację.
-
-    Przykład:
-
-    Warszawa
-    , +4
-    Locations
-
-    wynik:
-
-    Warszawa, +4 Locations
-    """
-
     for index, line in enumerate(lines):
 
         if not line:
@@ -49,11 +57,6 @@ def clean_location(lines):
 
             return location
 
-    # Alternatywny przypadek:
-    #
-    # Warszawa
-    # Locations
-
     for index in range(
         len(lines) - 1
     ):
@@ -69,19 +72,6 @@ def clean_location(lines):
 
 
 def clean_salary(lines):
-    """
-    Próbuje znaleźć wynagrodzenie.
-
-    Przykład:
-
-    4 553,34 - 6 287,94
-    CHF/month
-
-    wynik:
-
-    4 553,34 - 6 287,94 CHF/month
-    """
-
     salary_pattern = re.compile(
         r"""
         \d[\d\s.,]*
@@ -122,14 +112,18 @@ def clean_salary(lines):
 
             return salary
 
+        if re.search(
+            r"undisclosed\s+salary",
+            line,
+            re.IGNORECASE,
+        ):
+
+            return line
+
     return None
 
 
 def find_work_mode(lines):
-    """
-    Szuka trybu pracy.
-    """
-
     for line in lines:
 
         normalized = (
@@ -150,26 +144,99 @@ def find_work_mode(lines):
     return None
 
 
+def find_work_type(lines):
+    work_types = {
+        "full-time",
+        "part-time",
+        "practice / internship",
+        "internship",
+        "freelance",
+        "b2b contract",
+    }
+
+    found = []
+
+    for line in lines:
+
+        if line.lower().strip() in work_types:
+            found.append(line)
+
+    if not found:
+        return None
+
+    return ", ".join(
+        dict.fromkeys(found)
+    )
+
+
+def find_experience_level(lines):
+    levels = {
+        "intern",
+        "junior",
+        "mid",
+        "senior",
+        "team leader",
+        "manager",
+        "c-level",
+    }
+
+    found = []
+
+    for line in lines:
+
+        normalized = (
+            line
+            .lower()
+            .strip()
+        )
+
+        if normalized in levels:
+            found.append(line)
+
+    if not found:
+        return None
+
+    return ", ".join(
+        dict.fromkeys(found)
+    )
+
+
+def find_contract_type(lines):
+    contracts = {
+        "b2b",
+        "permanent",
+        "mandate",
+        "specific-task contract",
+        "mandate contract",
+    }
+
+    found = []
+
+    for line in lines:
+
+        normalized = (
+            line
+            .lower()
+            .strip()
+        )
+
+        if normalized in contracts:
+            found.append(line)
+
+    if not found:
+        return None
+
+    return ", ".join(
+        dict.fromkeys(found)
+    )
+
+
 def find_title(
     headings,
     link_title,
     link_text,
     lines,
 ):
-    """
-    Znajduje tytuł oferty.
-
-    Priorytet:
-    1. heading
-    2. title linku
-    3. tekst linku
-    4. karta
-    """
-
-    # -----------------------------------------
-    # HEADING
-    # -----------------------------------------
-
     for heading in headings:
 
         heading = clean_text(
@@ -178,10 +245,6 @@ def find_title(
 
         if heading:
             return heading
-
-    # -----------------------------------------
-    # TITLE ATRYBUTU
-    # -----------------------------------------
 
     link_title = clean_text(
         link_title
@@ -199,10 +262,6 @@ def find_title(
         if cleaned:
             return cleaned
 
-    # -----------------------------------------
-    # TEKST LINKU
-    # -----------------------------------------
-
     link_text = clean_text(
         link_text
     )
@@ -210,46 +269,7 @@ def find_title(
     if link_text:
         return link_text
 
-    # -----------------------------------------
-    # AWARYJNIE KARTA
-    # -----------------------------------------
-
-    excluded = {
-        "remote",
-        "hybrid",
-        "office",
-        "locations",
-        "new",
-        "super offer",
-        "1-click apply",
-        "full-time",
-        "part-time",
-        "senior",
-        "mid",
-        "junior",
-        "intern",
-    }
-
     for line in lines:
-
-        normalized = (
-            line.lower()
-        )
-
-        if normalized in excluded:
-            continue
-
-        if re.search(
-            r"\d+\s*d\s*left",
-            normalized,
-        ):
-            continue
-
-        if re.search(
-            r"(chf|eur|usd|pln|gbp)",
-            normalized,
-        ):
-            continue
 
         if len(line) > 5:
             return line
@@ -257,128 +277,8 @@ def find_title(
     return None
 
 
-def extract_job_from_raw_item(
-    item,
-    keyword,
-):
-    """
-    Zamienia surowy rekord DOM
-    na wspólny format oferty.
-    """
-
-    href = clean_text(
-        item.get("href")
-    )
-
-    if not href:
-        return None
-
-    if "/job-offer/" not in href:
-        return None
-
-    url = urljoin(
-        JUSTJOIN_BASE_URL,
-        href,
-    )
-
-    source_id = generate_source_id(
-        url
-    )
-
-    card_text = clean_text(
-        item.get("cardText")
-    )
-
-    lines = []
-
-    if card_text:
-
-        lines = [
-            clean_text(line)
-            for line in card_text.split("\n")
-            if clean_text(line)
-        ]
-
-    headings = (
-        item.get("headings")
-        or []
-    )
-
-    title = find_title(
-        headings=headings,
-        link_title=item.get(
-            "linkTitle"
-        ),
-        link_text=item.get(
-            "linkText"
-        ),
-        lines=lines,
-    )
-
-    if not title:
-        return None
-
-    location = clean_location(
-        lines
-    )
-
-    work_mode = find_work_mode(
-        lines
-    )
-
-    salary = clean_salary(
-        lines
-    )
-
-    # Pierwsza linia karty to obecnie
-    # firma w strukturze Just Join,
-    # np. CloudFerro S.A.
-
-    company = None
-
-    if lines:
-
-        candidate = lines[0]
-
-        if (
-            candidate
-            and candidate != title
-            and candidate != location
-        ):
-
-            company = candidate
-
-    return {
-        "portal": "justjoin",
-        "source_id": source_id,
-        "title": title,
-        "company": company,
-        "location": location,
-        "work_mode": work_mode,
-        "salary": salary,
-        "url": url,
-        "keyword": keyword,
-        "published_at": None,
-    }
-
-
 def build_justjoin_url(keyword):
-    """
-    Buduje URL wyszukiwania Just Join IT.
-
-    Pojedyncze słowo:
-
-    /job-offers/all-locations/devops
-
-    Fraza:
-
-    /job-offers/all-locations/devops
-    ?q=devops%20engineer%40keyword
-    """
-
     normalized = keyword.strip()
-
-    # Pojedyncze słowo.
 
     if " " not in normalized:
 
@@ -392,8 +292,6 @@ def build_justjoin_url(keyword):
             f"{slug}"
         )
 
-    # Fraza.
-
     encoded = quote(
         normalized
     )
@@ -405,14 +303,317 @@ def build_justjoin_url(keyword):
     )
 
 
+def extract_job_from_raw_item(item, keyword):
+    """
+    Zamienia surowy rekord z DOM na wspólny format oferty.
+
+    Zachowujemy strukturę linii karty, ponieważ Just Join
+    prezentuje dane w ustalonej kolejności.
+    """
+
+    href = item.get("href", "").strip()
+
+    if not href:
+        return None
+
+    if "/job-offer/" not in href:
+        return None
+
+    url = urljoin(
+        JUSTJOIN_BASE_URL,
+        href,
+    )
+
+    source_id = generate_source_id(url)
+
+    # -------------------------------------------------
+    # WAŻNE:
+    # tutaj NIE używamy clean_text() przed splitlines()
+    # -------------------------------------------------
+
+    lines = clean_lines(
+        item.get("cardText")
+    )
+
+    if not lines:
+        return None
+
+    # -------------------------------------------------
+    # TYTUŁ
+    # -------------------------------------------------
+
+    headings = item.get("headings") or []
+
+    title = None
+
+    for heading in headings:
+        heading = clean_text(heading)
+
+        if heading:
+            title = heading
+            break
+
+    if not title:
+
+        link_title = clean_text(
+            item.get("linkTitle")
+        )
+
+        if link_title:
+
+            title = re.sub(
+                r"^\s*view\s+offer\s*",
+                "",
+                link_title,
+                flags=re.IGNORECASE,
+            )
+
+    if not title:
+
+        link_text = clean_text(
+            item.get("linkText")
+        )
+
+        if link_text:
+            title = link_text
+
+    if not title:
+        return None
+
+    # -------------------------------------------------
+    # FIRMA
+    # -------------------------------------------------
+
+    # W aktualnej karcie Just Join firma znajduje się
+    # jako pierwszy sensowny element tekstowy.
+    company = lines[0]
+
+    if company == title:
+        company = None
+
+    # -------------------------------------------------
+    # LOKALIZACJA
+    # -------------------------------------------------
+
+    location = None
+
+    for index, line in enumerate(lines):
+
+        # Warszawa
+        # , +4
+        # Locations
+
+        if (
+            index + 1 < len(lines)
+            and lines[index + 1].startswith(",")
+        ):
+
+            location = (
+                f"{line}{lines[index + 1]}"
+            )
+
+            if (
+                index + 2 < len(lines)
+                and lines[index + 2].lower()
+                in {
+                    "location",
+                    "locations",
+                }
+            ):
+
+                location += (
+                    f" {lines[index + 2]}"
+                )
+
+            break
+
+        # Warszawa
+        # Locations
+
+        if (
+            index + 1 < len(lines)
+            and lines[index + 1].lower()
+            in {
+                "location",
+                "locations",
+            }
+        ):
+
+            location = line
+
+            break
+
+    # -------------------------------------------------
+    # TRYB PRACY
+    # -------------------------------------------------
+
+    work_mode = None
+
+    for line in lines:
+
+        normalized = line.lower()
+
+        if normalized == "remote":
+            work_mode = "Remote"
+            break
+
+        if normalized == "hybrid":
+            work_mode = "Hybrid"
+            break
+
+        if normalized == "office":
+            work_mode = "Office"
+            break
+
+    # -------------------------------------------------
+    # WYNAGRODZENIE
+    # -------------------------------------------------
+
+    salary = None
+
+    salary_range = re.compile(
+        r"""
+        \d[\d\s.,]*
+        \s*-\s*
+        \d[\d\s.,]*
+        """,
+        re.VERBOSE,
+    )
+
+    for index, line in enumerate(lines):
+
+        if salary_range.search(line):
+
+            salary = line
+
+            if index + 1 < len(lines):
+
+                next_line = lines[index + 1]
+
+                if re.search(
+                    r"(usd|eur|pln|gbp|chf|"
+                    r"/month|/h|month)",
+                    next_line,
+                    re.IGNORECASE,
+                ):
+
+                    salary = (
+                        f"{salary} "
+                        f"{next_line}"
+                    )
+
+            break
+
+        if re.search(
+            r"undisclosed\s+salary",
+            line,
+            re.IGNORECASE,
+        ):
+
+            salary = line
+            break
+
+    # -------------------------------------------------
+    # WORK TYPE
+    # -------------------------------------------------
+
+    work_type_values = {
+        "full-time",
+        "part-time",
+        "practice / internship",
+        "freelance",
+        "b2b contract",
+    }
+
+    work_type_found = []
+
+    for line in lines:
+
+        normalized = line.lower()
+
+        if normalized in work_type_values:
+            work_type_found.append(line)
+
+    work_type = ", ".join(
+        dict.fromkeys(work_type_found)
+    ) or None
+
+    # -------------------------------------------------
+    # EXPERIENCE
+    # -------------------------------------------------
+
+    experience_values = {
+        "intern",
+        "junior",
+        "mid",
+        "senior",
+        "team leader",
+        "manager",
+        "c-level",
+    }
+
+    experience_found = []
+
+    for line in lines:
+
+        normalized = line.lower()
+
+        if normalized in experience_values:
+            experience_found.append(line)
+
+    experience_level = ", ".join(
+        dict.fromkeys(experience_found)
+    ) or None
+
+    # -------------------------------------------------
+    # CONTRACT TYPE
+    # -------------------------------------------------
+
+    contract_values = {
+        "b2b",
+        "permanent",
+        "internship",
+        "mandate contract",
+        "specific-task contract",
+    }
+
+    contract_found = []
+
+    for line in lines:
+
+        normalized = line.lower()
+
+        if normalized in contract_values:
+            contract_found.append(line)
+
+    contract_type = ", ".join(
+        dict.fromkeys(contract_found)
+    ) or None
+
+    # -------------------------------------------------
+    # ZWRÓĆ REKORD
+    # -------------------------------------------------
+
+    return {
+        "portal": "justjoin",
+        "source_id": source_id,
+        "title": title,
+        "company": company,
+        "location": location,
+        "work_mode": work_mode,
+        "work_type": work_type,
+        "experience_level": experience_level,
+        "contract_type": contract_type,
+        "salary": salary,
+        "url": url,
+        "keyword": keyword,
+        "published_at": None,
+    }
+
 def scrape_justjoin_page(
     page,
     keyword,
 ):
-    """
-    Pobiera jedną stronę wyników Just Join IT.
-    """
-
     url = build_justjoin_url(
         keyword
     )
@@ -424,10 +625,6 @@ def scrape_justjoin_page(
     print(
         f"URL: {url}"
     )
-
-    # -----------------------------------------
-    # OTWARCIE STRONY
-    # -----------------------------------------
 
     try:
 
@@ -448,15 +645,11 @@ def scrape_justjoin_page(
             f"ładowania: {url}"
         )
 
-        return []
+        return [], False
 
     print(
         f"Załadowany URL: {page.url}"
     )
-
-    # -----------------------------------------
-    # CZEKAJ NA OFERTY
-    # -----------------------------------------
 
     try:
 
@@ -473,11 +666,7 @@ def scrape_justjoin_page(
             "do ofert na stronie."
         )
 
-        return []
-
-    # -----------------------------------------
-    # ODCZYT DOM
-    # -----------------------------------------
+        return [], False
 
     raw_jobs = page.evaluate(
         """
@@ -524,7 +713,6 @@ def scrape_justjoin_page(
                         .filter(Boolean);
 
                     return {
-
                         href:
                             href || "",
 
@@ -560,67 +748,23 @@ def scrape_justjoin_page(
         f"{len(raw_jobs)}"
     )
 
-    if not raw_jobs:
-        return []
-
-    # -----------------------------------------
-    # DEBUG
-    # -----------------------------------------
-
-    first = raw_jobs[0]
-
-    print(
-        "\n--- DEBUG PIERWSZEJ OFERTY ---"
-    )
-
-    print(
-        f"href: {first.get('href')}"
-    )
-
-    print(
-        f"linkTitle: "
-        f"{first.get('linkTitle')}"
-    )
-
-    print(
-        f"headings: "
-        f"{first.get('headings')}"
-    )
-
-    print(
-        "cardText: "
-        f"{first.get('cardText', '')[:800]}"
-    )
-
-    print(
-        "--- KONIEC DEBUG ---\n"
-    )
-
-    # -----------------------------------------
-    # NORMALIZACJA
-    # -----------------------------------------
-
     jobs = []
-
     seen = set()
 
     for item in raw_jobs:
 
         try:
 
-            job = (
-                extract_job_from_raw_item(
-                    item,
-                    keyword,
-                )
+            job = extract_job_from_raw_item(
+                item,
+                keyword,
             )
 
         except Exception as error:
 
             print(
                 "[WARN] Błąd podczas "
-                "przetwarzania oferty: "
-                f"{error}"
+                f"przetwarzania: {error}"
             )
 
             continue
@@ -644,51 +788,292 @@ def scrape_justjoin_page(
         f"przetworzenia: {len(jobs)}"
     )
 
+    # `True` oznacza, że strona została
+    # poprawnie zescrapowana.
+    return jobs, True
+
+
+def _extract_section(
+    lines,
+    start_titles,
+    end_titles,
+):
+    start_index = None
+
+    for index, line in enumerate(lines):
+
+        normalized = line.lower().strip()
+
+        if normalized in start_titles:
+
+            start_index = index + 1
+            break
+
+    if start_index is None:
+        return None
+
+    end_index = len(lines)
+
+    for index in range(
+        start_index,
+        len(lines),
+    ):
+
+        normalized = (
+            lines[index]
+            .lower()
+            .strip()
+        )
+
+        if normalized in end_titles:
+
+            end_index = index
+            break
+
+    section = lines[
+        start_index:end_index
+    ]
+
+    if not section:
+        return None
+
+    return "\n".join(section).strip()
+
+
+def parse_expiration(lines):
+    """
+    Wyciąga tekst wygaśnięcia i, jeżeli portal
+    pokazuje dokładną datę, zamienia ją na DATETIME.
+    """
+
+    for line in lines:
+
+        normalized = line.lower()
+
+        if (
+            "offer expired"
+            in normalized
+        ):
+
+            return (
+                "Offer expired",
+                None,
+            )
+
+        if re.search(
+            r"until\s+\d{2}\.\d{2}\.\d{4}",
+            line,
+            re.IGNORECASE,
+        ):
+
+            match = re.search(
+                r"(\d{2}\.\d{2}\.\d{4})",
+                line,
+            )
+
+            if match:
+
+                try:
+
+                    date_value = datetime.strptime(
+                        match.group(1),
+                        "%d.%m.%Y",
+                    )
+
+                    return (
+                        line,
+                        date_value,
+                    )
+
+                except ValueError:
+                    pass
+
+        if re.search(
+            r"\b\d+\s*day[s]?\s*left\b",
+            normalized,
+        ):
+
+            return (
+                line,
+                None,
+            )
+
+        if "expires tomorrow" in normalized:
+
+            return (
+                line,
+                None,
+            )
+
+        if "expires today" in normalized:
+
+            return (
+                line,
+                None,
+            )
+
+    return None, None
+
+
+def scrape_justjoin_details(
+    page,
+    job,
+):
+    """
+    Otwiera stronę szczegółową jednej oferty
+    i pobiera dodatkowe informacje.
+    """
+
+    url = job["url"]
+
+    print(
+        f"[SZCZEGÓŁY] {job['title']}"
+    )
+
+    try:
+
+        page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+
+        page.wait_for_timeout(
+            5000
+        )
+
+    except PlaywrightTimeoutError:
+
+        print(
+            "[WARN] Timeout strony "
+            f"szczegółowej: {url}"
+        )
+
+        return None
+
+    body_text = page.locator(
+        "body"
+    ).inner_text(
+        timeout=10000
+    )
+
+    lines = [
+        clean_text(line)
+        for line in body_text.split("\n")
+        if clean_text(line)
+    ]
+
+    title = None
+
+    try:
+
+        title = clean_text(
+            page.locator(
+                "h1"
+            ).first.inner_text(
+                timeout=5000
+            )
+        )
+
+    except Exception:
+        pass
+
     # -----------------------------------------
-    # PODGLĄD PIERWSZEGO REKORDU
+    # PODSTAWOWE INFORMACJE
     # -----------------------------------------
 
-    if jobs:
-
-        first_job = jobs[0]
-
-        print(
-            "\n--- DEBUG "
-            "PRZETWORZONEJ OFERTY ---"
+    location = None
+    work_mode = find_work_mode(
+        lines
+    )
+    work_type = find_work_type(
+        lines
+    )
+    experience_level = (
+        find_experience_level(
+            lines
         )
-
-        print(
-            f"Tytuł: "
-            f"{first_job['title']}"
+    )
+    contract_type = (
+        find_contract_type(
+            lines
         )
+    )
+    salary = clean_salary(
+        lines
+    )
 
-        print(
-            f"Firma: "
-            f"{first_job['company']}"
-        )
+    # -----------------------------------------
+    # SEKCJE
+    # -----------------------------------------
 
-        print(
-            f"Lokalizacja: "
-            f"{first_job['location']}"
-        )
+    job_description = _extract_section(
+        lines,
+        {
+            "job description",
+        },
+        {
+            "tech stack",
+            "office location",
+            "about the company",
+            "similar offers",
+        },
+    )
 
-        print(
-            f"Tryb: "
-            f"{first_job['work_mode']}"
-        )
+    tech_stack = _extract_section(
+        lines,
+        {
+            "tech stack",
+        },
+        {
+            "office location",
+            "about the company",
+            "similar offers",
+        },
+    )
 
-        print(
-            f"Wynagrodzenie: "
-            f"{first_job['salary']}"
-        )
+    office_location = _extract_section(
+        lines,
+        {
+            "office location",
+        },
+        {
+            "about the company",
+            "similar offers",
+        },
+    )
 
-        print(
-            f"URL: "
-            f"{first_job['url']}"
-        )
+    about_company = _extract_section(
+        lines,
+        {
+            "about the company",
+        },
+        {
+            "similar offers",
+        },
+    )
 
-        print(
-            "--- KONIEC DEBUG ---\n"
-        )
+    # -----------------------------------------
+    # WYGAŚNIĘCIE
+    # -----------------------------------------
 
-    return jobs
+    expires_text, expires_at = (
+        parse_expiration(lines)
+    )
+
+    return {
+        "title": title,
+        "company": job["company"],
+        "location": location or job["location"],
+        "work_mode": work_mode or job["work_mode"],
+        "work_type": work_type or job["work_type"],
+        "experience_level": experience_level,
+        "contract_type": contract_type,
+        "salary": salary or job["salary"],
+        "job_description": job_description,
+        "tech_stack": tech_stack,
+        "office_location": office_location,
+        "about_company": about_company,
+        "expires_text": expires_text,
+        "expires_at": expires_at,
+    }

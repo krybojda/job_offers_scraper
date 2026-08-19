@@ -2,18 +2,24 @@ import argparse
 import random
 import time
 
-from playwright.sync_api import sync_playwright # type: ignore
+from playwright.sync_api import sync_playwright
 
 from config import (
+    DETAIL_MAX_DELAY,
+    DETAIL_MIN_DELAY,
     HEADLESS,
+    MAX_DETAILS_PER_RUN,
     MAX_DELAY,
     MIN_DELAY,
+    MISSED_THRESHOLD,
     SCRAPE_INTERVAL,
     USER_AGENT,
 )
 
 from database import (
+    mark_missing_jobs,
     save_job,
+    save_job_details,
     wait_for_mysql,
 )
 
@@ -24,14 +30,12 @@ from filters import (
 )
 
 from justjoin import (
+    scrape_justjoin_details,
     scrape_justjoin_page,
 )
 
 
 def run_scrape():
-    """
-    Jeden pełny przebieg scrapera.
-    """
 
     print(
         "\n========================================"
@@ -45,10 +49,6 @@ def run_scrape():
         "========================================"
     )
 
-    # -----------------------------------------
-    # SŁOWA KLUCZOWE
-    # -----------------------------------------
-
     keywords = load_keywords()
 
     print(
@@ -56,14 +56,9 @@ def run_scrape():
     )
 
     for keyword in keywords:
-
         print(
             f"  - {keyword}"
         )
-
-    # -----------------------------------------
-    # IGNOROWANE
-    # -----------------------------------------
 
     ignored_keywords = (
         load_ignored_keywords()
@@ -75,14 +70,9 @@ def run_scrape():
     )
 
     for keyword in ignored_keywords:
-
         print(
             f"  - {keyword}"
         )
-
-    # -----------------------------------------
-    # MYSQL
-    # -----------------------------------------
 
     if not wait_for_mysql():
 
@@ -93,10 +83,18 @@ def run_scrape():
     total_found = 0
     total_saved = 0
     total_ignored = 0
+    total_details = 0
 
-    # -----------------------------------------
-    # PLAYWRIGHT
-    # -----------------------------------------
+    # Wszystkie oferty, które zostały znalezione
+    # przez Just Join w tym przebiegu.
+    seen_source_ids = set()
+
+    # Czy wszystkie wyszukiwania Just Join
+    # zakończyły się prawidłowo.
+    scan_complete = True
+
+    # Kolejka szczegółów.
+    details_queue = []
 
     with sync_playwright() as playwright:
 
@@ -113,13 +111,14 @@ def run_scrape():
             locale="pl-PL",
         )
 
-        page = context.new_page()
+        search_page = context.new_page()
+        details_page = context.new_page()
 
         try:
 
-            # =====================================
-            # JUST JOIN IT
-            # =====================================
+            # =================================================
+            # JUST JOIN — WYSZUKIWANIE
+            # =================================================
 
             for index, keyword in enumerate(
                 keywords
@@ -144,12 +143,15 @@ def run_scrape():
 
                 try:
 
-                    jobs = (
+                    jobs, page_ok = (
                         scrape_justjoin_page(
-                            page,
+                            search_page,
                             keyword,
                         )
                     )
+
+                    if not page_ok:
+                        scan_complete = False
 
                     total_found += len(
                         jobs
@@ -157,9 +159,12 @@ def run_scrape():
 
                     for job in jobs:
 
-                        # -----------------------------
-                        # FILTR IGNOROWANYCH
-                        # -----------------------------
+                        # Nawet jeżeli oferta jest
+                        # ignorowana, została znaleziona
+                        # na portalu.
+                        seen_source_ids.add(
+                            job["source_id"]
+                        )
 
                         if is_ignored_job(
                             job["title"],
@@ -175,17 +180,29 @@ def run_scrape():
 
                             continue
 
-                        # -----------------------------
-                        # MYSQL
-                        # -----------------------------
-
-                        save_job(
+                        result = save_job(
                             job
                         )
 
                         total_saved += 1
 
+                        # -----------------------------------------
+                        # Szczegóły tylko wtedy, gdy potrzebne.
+                        # -----------------------------------------
+
+                        if (
+                            result["needs_details"]
+                            and len(details_queue)
+                            < MAX_DETAILS_PER_RUN
+                        ):
+
+                            details_queue.append(
+                                job
+                            )
+
                 except Exception as error:
+
+                    scan_complete = False
 
                     print(
                         "[ERROR] Just Join IT "
@@ -193,14 +210,114 @@ def run_scrape():
                         f"{error}"
                     )
 
+            # =================================================
+            # SZCZEGÓŁY OFERT
+            # =================================================
+
+            print(
+                "\n========================================"
+            )
+
+            print(
+                "POBIERANIE SZCZEGÓŁÓW OFERT"
+            )
+
+            print(
+                "========================================"
+            )
+
+            print(
+                f"Oferta do pobrania szczegółów: "
+                f"{len(details_queue)}"
+            )
+
+            for index, job in enumerate(
+                details_queue
+            ):
+
+                if index > 0:
+
+                    delay = random.uniform(
+                        DETAIL_MIN_DELAY,
+                        DETAIL_MAX_DELAY,
+                    )
+
+                    print(
+                        "\nPrzerwa przed "
+                        "kolejną ofertą szczegółową: "
+                        f"{delay:.1f} s"
+                    )
+
+                    time.sleep(
+                        delay
+                    )
+
+                try:
+
+                    details = (
+                        scrape_justjoin_details(
+                            details_page,
+                            job,
+                        )
+                    )
+
+                    if details:
+
+                        save_job_details(
+                            portal="justjoin",
+                            source_id=job[
+                                "source_id"
+                            ],
+                            details=details,
+                        )
+
+                        total_details += 1
+
+                except Exception as error:
+
+                    print(
+                        "[ERROR] Szczegóły "
+                        f"{job['url']}: "
+                        f"{error}"
+                    )
+
+            # =================================================
+            # AKTYWNOŚĆ OFERT
+            # =================================================
+
+            if scan_complete:
+
+                mark_missing_jobs(
+                    portal="justjoin",
+                    seen_source_ids=(
+                        seen_source_ids
+                    ),
+                    threshold=(
+                        MISSED_THRESHOLD
+                    ),
+                )
+
+            else:
+
+                print(
+                    "[AKTYWNOŚĆ] Pominięto "
+                    "aktualizację missed_count, "
+                    "ponieważ pełny skan "
+                    "Just Join nie zakończył się "
+                    "poprawnie."
+                )
+
         finally:
+
+            search_page.close()
+            details_page.close()
 
             context.close()
             browser.close()
 
-    # -----------------------------------------
+    # =================================================
     # PODSUMOWANIE
-    # -----------------------------------------
+    # =================================================
 
     print(
         "\n========================================"
@@ -228,11 +345,17 @@ def run_scrape():
     )
 
     print(
+        f"Pobrano szczegółów: "
+        f"{total_details}"
+    )
+
+    print(
         "PRZEBIEG ZAKOŃCZONY"
     )
 
 
 def parse_args():
+
     parser = argparse.ArgumentParser(
         description="Scraper ofert pracy"
     )
@@ -251,9 +374,8 @@ def parse_args():
         type=int,
         default=SCRAPE_INTERVAL,
         help=(
-            "Interwał między "
-            "pełnymi przebiegami "
-            "w sekundach."
+            "Interwał między pełnymi "
+            "przebiegami w sekundach."
         ),
     )
 
@@ -276,10 +398,6 @@ def main():
         "========================================"
     )
 
-    # -----------------------------------------
-    # JEDEN PRZEBIEG
-    # -----------------------------------------
-
     if args.once:
 
         print(
@@ -290,16 +408,12 @@ def main():
 
         return
 
-    # -----------------------------------------
-    # TRYB CIĄGŁY
-    # -----------------------------------------
-
     print(
         "Tryb: CIĄGŁY"
     )
 
     print(
-        "Interwał: "
+        f"Interwał: "
         f"{args.interval} sekund"
     )
 
