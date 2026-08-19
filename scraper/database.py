@@ -217,7 +217,6 @@ def save_job_details(
     connection = get_db_connection()
 
     try:
-
         cursor = connection.cursor()
 
         sql = """
@@ -231,6 +230,7 @@ def save_job_details(
                 experience_level = COALESCE(%s, experience_level),
                 contract_type = COALESCE(%s, contract_type),
                 salary = COALESCE(%s, salary),
+                published_at = COALESCE(%s, published_at),
                 job_description = %s,
                 tech_stack = %s,
                 office_location = %s,
@@ -251,6 +251,7 @@ def save_job_details(
             details.get("experience_level"),
             details.get("contract_type"),
             details.get("salary"),
+            details.get("published_at"),
             details.get("job_description"),
             details.get("tech_stack"),
             details.get("office_location"),
@@ -273,9 +274,7 @@ def save_job_details(
         )
 
     finally:
-
         connection.close()
-
 
 def mark_missing_jobs(
     portal,

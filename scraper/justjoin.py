@@ -2,11 +2,172 @@ import re
 from datetime import datetime
 from urllib.parse import quote, urljoin
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError # type: ignore
 
 from config import JUSTJOIN_BASE_URL
 from utils import clean_text, generate_source_id
 
+
+def find_published_date(lines):
+    """
+    Szuka daty publikacji na stronie szczegółowej.
+
+    Przykład:
+        Published: 19.08.2026
+
+    Zwraca obiekt datetime albo None.
+    """
+
+    date_pattern = re.compile(
+        r"(?:published|published\s+on)\s*:\s*"
+        r"(\d{2}\.\d{2}\.\d{4})",
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+
+        match = date_pattern.search(line)
+
+        if not match:
+            continue
+
+        try:
+            return datetime.strptime(
+                match.group(1),
+                "%d.%m.%Y",
+            )
+
+        except ValueError:
+            continue
+
+    return None
+
+
+def find_detail_location(lines, title):
+    """
+    Próbuje znaleźć właściwą lokalizację oferty
+    z sekcji "Summary of the offer".
+
+    Typowy układ Just Join:
+
+    Summary of the offer
+    ...
+    DevOps Engineer
+    -, Warszawa
+    Firma
+    ...
+
+    albo:
+
+    DevOps Engineer
+    centrum, Warszawa
+    Firma
+    """
+
+    summary_index = None
+
+    for index, line in enumerate(lines):
+
+        if line.lower().strip() == "summary of the offer":
+            summary_index = index
+            break
+
+    if summary_index is None:
+        return None
+
+    normalized_title = (
+        title.lower().strip()
+        if title
+        else ""
+    )
+
+    # Szukamy tytułu wewnątrz Summary.
+    for index in range(
+        summary_index + 1,
+        min(
+            summary_index + 30,
+            len(lines),
+        ),
+    ):
+
+        line = lines[index]
+
+        if (
+            normalized_title
+            and line.lower().strip()
+            == normalized_title
+        ):
+
+            # Kolejna sensowna linia powinna
+            # zawierać lokalizację.
+            for next_index in range(
+                index + 1,
+                min(
+                    index + 5,
+                    len(lines),
+                ),
+            ):
+
+                candidate = lines[next_index].strip()
+
+                if not candidate:
+                    continue
+
+                # Pomijamy elementy interfejsu.
+                if candidate.lower() in {
+                    "save",
+                    "apply",
+                    "summary of the offer",
+                }:
+                    continue
+
+                # Jeżeli kolejna linia jest firmą,
+                # będzie trudniej ją odróżnić.
+                # Lokalizacja zwykle zawiera przecinek
+                # albo zaczyna się od "-,".
+                if (
+                    "," in candidate
+                    or candidate.startswith("-,")
+                ):
+
+                    candidate = candidate.strip()
+
+                    # "-, Warszawa" -> "Warszawa"
+                    candidate = re.sub(
+                        r"^-\s*,\s*",
+                        "",
+                        candidate,
+                    )
+
+                    return candidate
+
+                # Jeżeli mamy zwykłą lokalizację,
+                # np. Warszawa.
+                if re.search(
+                    r"""\b(
+                        Warszawa|
+                        Kraków|
+                        Wrocław|
+                        Poznań|
+                        Gdańsk|
+                        Katowice|
+                        Łódź|
+                        Lublin|
+                        Białystok|
+                        Rzeszów|
+                        Bydgoszcz|
+                        Szczecin|
+                        Krakow|
+                        Wroclaw|
+                        Poznan
+                    )\b""",
+                    candidate,
+                    re.IGNORECASE | re.VERBOSE,
+                ):
+                    return candidate
+
+    return None
 
 def clean_lines(value):
     """
@@ -30,32 +191,58 @@ def clean_lines(value):
     return lines
 
 def clean_location(lines):
-    for index, line in enumerate(lines):
+    """
+    Wyciąga lokalizację z karty wyników Just Join.
+    """
 
-        if not line:
+    # -----------------------------------------
+    # PRZYPADEK:
+    #
+    # Warszawa
+    # , +4
+    # Locations
+    # -----------------------------------------
+
+    for index in range(
+        len(lines)
+    ):
+
+        if index + 1 >= len(lines):
+            break
+
+        current = lines[index]
+        next_line = lines[index + 1]
+
+        if not current:
             continue
 
-        if (
-            index + 1 < len(lines)
-            and lines[index + 1].startswith(",")
-        ):
+        if next_line.startswith(","):
 
             location = (
-                f"{line}{lines[index + 1]}"
+                f"{current}{next_line}"
             )
 
             if (
                 index + 2 < len(lines)
                 and lines[index + 2].lower()
-                == "locations"
+                in {
+                    "location",
+                    "locations",
+                }
             ):
 
-                location = (
-                    f"{location} "
-                    f"{lines[index + 2]}"
+                location += (
+                    f" {lines[index + 2]}"
                 )
 
             return location
+
+    # -----------------------------------------
+    # PRZYPADEK:
+    #
+    # Warszawa
+    # Locations
+    # -----------------------------------------
 
     for index in range(
         len(lines) - 1
@@ -63,13 +250,19 @@ def clean_location(lines):
 
         if (
             lines[index + 1].lower()
-            == "locations"
+            in {
+                "location",
+                "locations",
+            }
         ):
 
             return lines[index]
 
-    return None
+    # -----------------------------------------
+    # Nie znaleziono
+    # -----------------------------------------
 
+    return None
 
 def clean_salary(lines):
     salary_pattern = re.compile(
@@ -978,31 +1171,45 @@ def scrape_justjoin_details(
     except Exception:
         pass
 
+
+
     # -----------------------------------------
     # PODSTAWOWE INFORMACJE
     # -----------------------------------------
 
-    location = None
+    published_at = find_published_date(
+        lines
+    )
+
+    location = find_detail_location(
+        lines,
+        job["title"]
+    )
+
     work_mode = find_work_mode(
         lines
     )
+
     work_type = find_work_type(
         lines
     )
+
     experience_level = (
         find_experience_level(
             lines
         )
     )
+
     contract_type = (
         find_contract_type(
             lines
         )
     )
+
     salary = clean_salary(
         lines
     )
-
+    
     # -----------------------------------------
     # SEKCJE
     # -----------------------------------------
@@ -1070,6 +1277,7 @@ def scrape_justjoin_details(
         "experience_level": experience_level,
         "contract_type": contract_type,
         "salary": salary or job["salary"],
+        "published_at": published_at,
         "job_description": job_description,
         "tech_stack": tech_stack,
         "office_location": office_location,

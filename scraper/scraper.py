@@ -2,7 +2,7 @@ import argparse
 import random
 import time
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright # type: ignore
 
 from config import (
     DETAIL_MAX_DELAY,
