@@ -8,7 +8,6 @@ from playwright.sync_api import (
 
 from config import (
     PRACUJ_BASE_URL,
-    PRACUJ_MAX_PAGES,
 )
 
 from utils import (
@@ -18,7 +17,7 @@ from utils import (
 
 
 # =========================================================
-# BLOKADY
+# BLOKADA
 # =========================================================
 
 class PracujBlockedError(Exception):
@@ -53,29 +52,18 @@ def detect_pracuj_block(
     page,
 ):
     """
-    Wykrywa blokadę Pracuj.pl.
+    Wykrywa typową blokadę.
 
-    Samo wystąpienie słowa captcha
-    NIE oznacza blokady.
+    Samo wystąpienie słowa "captcha"
+    NIE jest traktowane jako blokada.
     """
-
-    # -----------------------------------------------------
-    # STATUS HTTP
-    # -----------------------------------------------------
 
     if response is not None:
 
         status = response.status
 
         if status in BLOCK_STATUS_CODES:
-
-            return (
-                f"HTTP {status}"
-            )
-
-    # -----------------------------------------------------
-    # TEKST STRONY
-    # -----------------------------------------------------
+            return f"HTTP {status}"
 
     try:
 
@@ -104,6 +92,32 @@ def detect_pracuj_block(
 
 
 # =========================================================
+# CZYSZCZENIE
+# =========================================================
+
+def clean_lines(text):
+    """
+    Czyści tekst, ale zachowuje podział na linie.
+    """
+
+    if not text:
+        return []
+
+    lines = []
+
+    for line in text.splitlines():
+
+        line = " ".join(
+            line.split()
+        ).strip()
+
+        if line:
+            lines.append(line)
+
+    return lines
+
+
+# =========================================================
 # DATA PUBLIKACJI
 # =========================================================
 
@@ -123,17 +137,12 @@ POLISH_MONTHS = {
 }
 
 
-def parse_published_date_text(
+def parse_published_date(
     text,
 ):
     """
-    Parsuje np.:
-
-        Opublikowana: 8 sierpnia 2026
-
-    oraz:
-
-        Opublikowana: 8 sierpnia 2026
+    Rozpoznaje:
+        Opublikowana: 12 sierpnia 2026
     """
 
     if not text:
@@ -152,25 +161,19 @@ def parse_published_date_text(
         re.IGNORECASE | re.VERBOSE,
     )
 
-    match = pattern.search(
-        text
-    )
+    match = pattern.search(text)
 
     if not match:
         return None
 
-    day = int(
-        match.group(1)
-    )
+    day = int(match.group(1))
 
     month_name = (
         match.group(2)
         .lower()
     )
 
-    year = int(
-        match.group(3)
-    )
+    year = int(match.group(3))
 
     month = POLISH_MONTHS.get(
         month_name
@@ -201,52 +204,39 @@ def find_salary(
 ):
     """
     Szuka wynagrodzenia.
-
-    Obsługuje np.:
-
-        20 000–25 000 zł brutto / mies.
-
-        130–150 zł netto (+ VAT) / godz.
-
-        120–160 zł netto (+ VAT) / godz.
     """
 
-    salary_patterns = [
-        re.compile(
-            r"""
-            \d[\d\s.,]*
-            \s*[–-]\s*
-            \d[\d\s.,]*
-            \s*
-            (zł|zl|pln|eur|usd|gbp|chf)
-            .*?
-            """,
-            re.IGNORECASE | re.VERBOSE,
-        ),
+    range_pattern = re.compile(
+        r"""
+        \d[\d\s.,]*
+        \s*[–-]\s*
+        \d[\d\s.,]*
+        \s*
+        (?:zł|zl|pln|eur|usd|gbp|chf)
+        .*?
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
 
-        re.compile(
-            r"""
-            \d[\d\s.,]*
-            \s*
-            (zł|zl|pln|eur|usd|gbp|chf)
-            .*?
-            """,
-            re.IGNORECASE | re.VERBOSE,
-        ),
-    ]
+    single_pattern = re.compile(
+        r"""
+        \d[\d\s.,]*
+        \s*
+        (?:zł|zl|pln|eur|usd|gbp|chf)
+        .*?
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
 
     for line in lines:
 
-        if not line:
-            continue
+        if range_pattern.search(line):
+            return line
 
-        for pattern in salary_patterns:
+    for line in lines:
 
-            if pattern.search(
-                line
-            ):
-
-                return line
+        if single_pattern.search(line):
+            return line
 
     return None
 
@@ -257,139 +247,88 @@ def find_salary(
 
 def find_location(
     lines,
-    company=None,
 ):
     """
-    Próbuje rozpoznać lokalizację.
-
-    Przykłady Pracuj:
-
-        Warszawa
-
-        Kraków, Grzegórzki
-
-        Miejsce pracy:Cała Polska (praca zdalna)
-        Siedziba firmy:Warszawa
-
-        3 lokalizacje
+    Szuka lokalizacji oferty.
     """
 
-    location_prefix = (
-        "miejsce pracy:"
-    )
-
-    company_index = None
-
-    if company:
-
-        company_lower = (
-            company.lower()
-        )
-
-        for index, line in enumerate(
-            lines
-        ):
-
-            if (
-                line.lower().strip()
-                == company_lower.strip()
-            ):
-
-                company_index = index
-                break
-
-    # -----------------------------------------------------
-    # Miejsce pracy:
-    # -----------------------------------------------------
-
+    # Miejsce pracy: ...
     for line in lines:
 
         normalized = (
-            line.lower().strip()
+            line.lower()
+            .strip()
         )
 
         if normalized.startswith(
-            location_prefix
+            "miejsce pracy:"
         ):
 
             value = line[
-                len(location_prefix):
+                len("miejsce pracy:"):
             ].strip()
 
             if value:
                 return value
 
-    # -----------------------------------------------------
-    # "3 lokalizacje"
-    # -----------------------------------------------------
-
+    # np. "2 lokalizacje"
     for line in lines:
 
         if re.fullmatch(
-            r"\d+\s+lokalizacje?",
+            r"\d+\s+lokalizacj[ei]",
             line.strip(),
             re.IGNORECASE,
         ):
 
             return line
 
-    # -----------------------------------------------------
-    # Lokalizacja zaraz po firmie.
-    # -----------------------------------------------------
+    # Siedziba firmy jako fallback
+    for line in lines:
 
-    if company_index is not None:
+        normalized = (
+            line.lower()
+            .strip()
+        )
 
-        for index in range(
-            company_index + 1,
-            min(
-                company_index + 5,
-                len(lines),
-            ),
+        if normalized.startswith(
+            "siedziba firmy:"
         ):
 
-            candidate = lines[
-                index
+            value = line[
+                len("siedziba firmy:"):
             ].strip()
 
-            if not candidate:
-                continue
+            if value:
+                return value
 
-            if candidate.lower().startswith(
-                "miejsce pracy:"
-            ):
-                return candidate
+    # Typowe miasta
+    location_pattern = re.compile(
+        r"\b("
+        r"Warszawa|"
+        r"Kraków|"
+        r"Wrocław|"
+        r"Poznań|"
+        r"Gdańsk|"
+        r"Katowice|"
+        r"Łódź|"
+        r"Lublin|"
+        r"Białystok|"
+        r"Rzeszów|"
+        r"Bydgoszcz|"
+        r"Szczecin|"
+        r"Krakow|"
+        r"Wroclaw|"
+        r"Poznan|"
+        r"Gdansk|"
+        r"Lodz"
+        r")\b",
+        re.IGNORECASE,
+    )
 
-            if candidate.lower() in {
-                "superoferta",
-                "aplikuj szybko",
-            }:
-                continue
+    for line in lines:
 
-            if re.search(
-                r"\b("
-                r"Warszawa|"
-                r"Kraków|"
-                r"Wrocław|"
-                r"Poznań|"
-                r"Gdańsk|"
-                r"Katowice|"
-                r"Łódź|"
-                r"Lublin|"
-                r"Białystok|"
-                r"Rzeszów|"
-                r"Bydgoszcz|"
-                r"Szczecin|"
-                r"Krakow|"
-                r"Wroclaw|"
-                r"Poznan|"
-                r"Gdansk|"
-                r"Lodz"
-                r")\b",
-                candidate,
-                re.IGNORECASE,
-            ):
-
-                return candidate
+        if location_pattern.search(line):
+            return line
 
     return None
 
@@ -402,42 +341,37 @@ def find_work_mode(
     lines,
 ):
     """
-    Praca zdalna / hybrydowa / stacjonarna.
+    Rozpoznaje tryb pracy.
     """
 
     found = []
 
     for line in lines:
 
-        normalized = (
-            line.lower()
-        )
+        normalized = line.lower()
 
-        if (
-            "praca zdalna"
-            in normalized
-        ):
+        if "praca zdalna" in normalized:
 
             found.append(
                 "Praca zdalna"
             )
 
-        if (
-            "praca hybrydowa"
-            in normalized
-        ):
+        if "praca hybrydowa" in normalized:
 
             found.append(
                 "Praca hybrydowa"
             )
 
-        if (
-            "praca stacjonarna"
-            in normalized
-        ):
+        if "praca stacjonarna" in normalized:
 
             found.append(
                 "Praca stacjonarna"
+            )
+
+        if "praca mobilna" in normalized:
+
+            found.append(
+                "Praca mobilna"
             )
 
     if not found:
@@ -449,49 +383,41 @@ def find_work_mode(
 
 
 # =========================================================
-# TYP PRACY
+# WYMIAR PRACY
 # =========================================================
 
 def find_work_type(
     lines,
 ):
     """
-    Pełny etat / część etatu itd.
+    Rozpoznaje wymiar pracy.
     """
 
     found = []
 
+    patterns = [
+        (
+            "pełny etat",
+            "Pełny etat",
+        ),
+        (
+            "część etatu",
+            "Część etatu",
+        ),
+        (
+            "dodatkowa / tymczasowa",
+            "Dodatkowa / tymczasowa",
+        ),
+    ]
+
     for line in lines:
 
-        normalized = (
-            line.lower()
-            .strip()
-        )
+        normalized = line.lower()
 
-        if (
-            normalized == "pełny etat"
-        ):
+        for pattern, value in patterns:
 
-            found.append(
-                "Pełny etat"
-            )
-
-        elif (
-            normalized == "część etatu"
-        ):
-
-            found.append(
-                "Część etatu"
-            )
-
-        elif (
-            normalized
-            == "niepełny etat"
-        ):
-
-            found.append(
-                "Niepełny etat"
-            )
+            if pattern in normalized:
+                found.append(value)
 
     if not found:
         return None
@@ -502,46 +428,83 @@ def find_work_type(
 
 
 # =========================================================
-# DOŚWIADCZENIE
+# POZIOM
 # =========================================================
 
 def find_experience_level(
     lines,
 ):
     """
-    Zwraca pełną linię poziomu,
-    np.:
-
-        Specjalista / Specjalistka
-        (mid / Regular), Starszy ...
+    Rozpoznaje poziom doświadczenia.
     """
 
     found = []
 
+    bracket_patterns = [
+        (
+            r"\(\s*junior\s*\)",
+            "Junior",
+        ),
+        (
+            r"\(\s*mid\s*/?\s*regular\s*\)",
+            "Mid / Regular",
+        ),
+        (
+            r"\(\s*mid\s*\)",
+            "Mid",
+        ),
+        (
+            r"\(\s*regular\s*\)",
+            "Regular",
+        ),
+        (
+            r"\(\s*senior\s*\)",
+            "Senior",
+        ),
+        (
+            r"\(\s*expert\s*\)",
+            "Expert",
+        ),
+        (
+            r"\(\s*ekspert\s*\)",
+            "Ekspert",
+        ),
+    ]
+
     for line in lines:
 
-        normalized = (
-            line.lower()
-        )
+        for pattern, value in bracket_patterns:
 
-        if (
-            "(junior)"
-            in normalized
-            or "(mid"
-            in normalized
-            or "(regular)"
-            in normalized
-            or "(senior)"
-            in normalized
-            or "(expert)"
-            in normalized
-            or "(ekspert"
-            in normalized
-        ):
+            if re.search(
+                pattern,
+                line,
+                re.IGNORECASE,
+            ):
 
-            found.append(
-                line
-            )
+                found.append(value)
+
+    # Fallback dla pełnych polskich nazw
+    if not found:
+
+        for line in lines:
+
+            normalized = line.lower()
+
+            if "młodszy specjalista" in normalized:
+
+                found.append("Junior")
+
+            elif "starszy specjalista" in normalized:
+
+                found.append("Senior")
+
+            elif "ekspert / ekspertka" in normalized:
+
+                found.append("Ekspert")
+
+            elif "specjalista / specjalistka" in normalized:
+
+                found.append("Specjalista")
 
     if not found:
         return None
@@ -559,40 +522,54 @@ def find_contract_type(
     lines,
 ):
     """
-    Zwraca informacje o umowie.
+    Rozpoznaje typ umowy.
     """
-
-    contract_patterns = [
-        "umowa o pracę",
-        "umowa zlecenie",
-        "kontrakt b2b",
-        "umowa o dzieło",
-        "kontrakt",
-        "b2b",
-    ]
 
     found = []
 
+    patterns = [
+        (
+            "kontrakt b2b",
+            "Kontrakt B2B",
+        ),
+        (
+            "umowa o pracę",
+            "Umowa o pracę",
+        ),
+        (
+            "umowa o dzieło",
+            "Umowa o dzieło",
+        ),
+        (
+            "umowa zlecenie",
+            "Umowa zlecenie",
+        ),
+        (
+            "umowa na zastępstwo",
+            "Umowa na zastępstwo",
+        ),
+        (
+            "umowa agencyjna",
+            "Umowa agencyjna",
+        ),
+        (
+            "umowa o pracę tymczasową",
+            "Umowa o pracę tymczasową",
+        ),
+        (
+            "umowa o staż / praktyki",
+            "Umowa o staż / praktyki",
+        ),
+    ]
+
     for line in lines:
 
-        normalized = (
-            line.lower()
-        )
+        normalized = line.lower()
 
-        matches = []
-
-        for pattern in contract_patterns:
+        for pattern, value in patterns:
 
             if pattern in normalized:
-                matches.append(
-                    pattern
-                )
-
-        if matches:
-
-            found.append(
-                line
-            )
+                found.append(value)
 
     if not found:
         return None
@@ -603,196 +580,40 @@ def find_contract_type(
 
 
 # =========================================================
-# POMOCNICZE CZYSZCZENIE LINII
+# TYTUŁ
 # =========================================================
 
-def clean_lines(
-    text,
+def find_title(
+    item,
 ):
     """
-    Czyści tekst, zachowując podział
-    na osobne linie.
+    Tytuł pobieramy z linku oferty.
     """
 
-    if not text:
-        return []
+    title = clean_text(
+        item.get("title")
+    )
 
-    lines = []
+    if title:
+        return title
 
-    for line in text.splitlines():
-
-        line = " ".join(
-            line.split()
-        ).strip()
-
-        if line:
-            lines.append(
-                line
-            )
-
-    return lines
-
-
-# =========================================================
-# WYCIĄGANIE SEKCJI
-# =========================================================
-
-def extract_section(
-    lines,
-    start_patterns,
-    end_patterns,
-):
-    """
-    Wyciąga zawartość pomiędzy nagłówkami.
-    """
-
-    start_index = None
-
-    start_patterns = [
-        item.lower()
-        for item in start_patterns
-    ]
-
-    end_patterns = [
-        item.lower()
-        for item in end_patterns
-    ]
-
-    for index, line in enumerate(
-        lines
+    for heading in (
+        item.get("headings")
+        or []
     ):
 
-        normalized = (
-            line.lower()
-            .strip()
+        heading = clean_text(
+            heading
         )
 
-        if any(
-            pattern in normalized
-            for pattern in start_patterns
-        ):
+        if heading:
+            return heading
 
-            start_index = index + 1
-            break
-
-    if start_index is None:
-        return None
-
-    end_index = len(lines)
-
-    for index in range(
-        start_index,
-        len(lines),
-    ):
-
-        normalized = (
-            lines[index]
-            .lower()
-            .strip()
-        )
-
-        if any(
-            pattern in normalized
-            for pattern in end_patterns
-        ):
-
-            end_index = index
-            break
-
-    section = lines[
-        start_index:end_index
-    ]
-
-    if not section:
-        return None
-
-    return "\n".join(
-        section
-    ).strip()
+    return None
 
 
 # =========================================================
-# WYGAŚNIĘCIE
-# =========================================================
-
-def find_expiration(
-    lines,
-):
-    """
-    Pracuj nie musi udostępniać terminu
-    wygaśnięcia w taki sam sposób jak Just Join.
-
-    Zwraca tekst, jeżeli znajdziemy odpowiednią
-    informację.
-    """
-
-    for line in lines:
-
-        normalized = (
-            line.lower()
-        )
-
-        if (
-            "oferta wygasa"
-            in normalized
-            or "ważna do"
-            in normalized
-            or "ważne do"
-            in normalized
-        ):
-
-            return (
-                line,
-                None,
-            )
-
-    return (
-        None,
-        None,
-    )
-
-
-# =========================================================
-# BUDOWANIE URL
-# =========================================================
-
-def build_pracuj_url(
-    keyword,
-    page_number=1,
-):
-    """
-    Buduje URL wyszukiwania Pracuj.pl.
-
-    Przykład:
-
-        /praca/devops%20engineer%3Bkw
-
-    Kolejna strona:
-
-        ?pn=2
-    """
-
-    encoded_keyword = quote(
-        keyword.strip(),
-        safe="",
-    )
-
-    url = (
-        f"{PRACUJ_BASE_URL}/praca/"
-        f"{encoded_keyword}%3Bkw"
-    )
-
-    if page_number > 1:
-
-        url += (
-            f"?pn={page_number}"
-        )
-
-    return url
-
-
-# =========================================================
-# PARSOWANIE KARTY
+# KARTA OFERTY
 # =========================================================
 
 def extract_job_from_raw_item(
@@ -800,8 +621,8 @@ def extract_job_from_raw_item(
     keyword,
 ):
     """
-    Zamienia kartę wyników Pracuj.pl
-    na wspólny format job.
+    Zamienia dane karty HTML na rekord
+    w jednolitym formacie.
     """
 
     href = (
@@ -824,92 +645,112 @@ def extract_job_from_raw_item(
         url
     )
 
-    title = clean_text(
-        item.get("title")
-    )
-
-    if not title:
-        return None
-
-    company = clean_text(
-        item.get("company")
-    )
-
-    raw_card_text = (
+    card_text = (
         item.get("cardText")
         or ""
     )
 
     lines = clean_lines(
-        raw_card_text
+        card_text
     )
 
     if not lines:
         return None
 
+    title = find_title(
+        item
+    )
+
+    if not title:
+        return None
+
+    # -----------------------------------------------------
+    # FIRMA
+    # -----------------------------------------------------
+
+    company = clean_text(
+        item.get("company")
+    )
+
     if not company:
 
-        # Awaryjnie szukamy linii znajdującej
-        # się po tytule.
-        try:
+        # Awaryjny fallback.
+        title_index = None
 
-            title_index = (
-                lines.index(
-                    title
-                )
-            )
+        for index, line in enumerate(lines):
 
             if (
-                title_index + 1
-                < len(lines)
+                line.strip()
+                == title.strip()
             ):
 
-                candidate = lines[
-                    title_index + 1
-                ]
+                title_index = index
+                break
 
-                if candidate:
+        if title_index is not None:
 
-                    company = candidate
+            for candidate in lines[
+                title_index + 1:
+            ]:
 
-        except ValueError:
+                candidate = clean_text(
+                    candidate
+                )
 
-            pass
+                if not candidate:
+                    continue
 
-    location = find_location(
-        lines,
-        company,
-    )
+                if "opublikowana:" in candidate.lower():
+                    continue
 
-    work_mode = find_work_mode(
-        lines
-    )
+                if re.search(
+                    r"\d[\d\s.,]*"
+                    r"\s*[–-]\s*"
+                    r"\d[\d\s.,]*"
+                    r"\s*"
+                    r"(zł|zl|pln|eur|usd|gbp|chf)",
+                    candidate,
+                    re.IGNORECASE,
+                ):
+                    continue
 
-    work_type = find_work_type(
-        lines
-    )
+                if candidate.lower() in {
+                    "superoferta",
+                    "aplikuj szybko",
+                    "oferta wygasa",
+                }:
+                    continue
+
+                company = candidate
+                break
+
+    # -----------------------------------------------------
+    # POLA
+    # -----------------------------------------------------
+
+    location = find_location(lines)
+
+    work_mode = find_work_mode(lines)
+
+    work_type = find_work_type(lines)
 
     experience_level = (
-        find_experience_level(
-            lines
-        )
+        find_experience_level(lines)
     )
 
     contract_type = (
-        find_contract_type(
-            lines
-        )
+        find_contract_type(lines)
     )
 
-    salary = find_salary(
-        lines
-    )
+    salary = find_salary(lines)
 
     published_at = (
-        parse_published_date_text(
-            raw_card_text
-        )
+        parse_published_date(card_text)
     )
+
+    # -----------------------------------------------------
+    # REKORD
+    # -----------------------------------------------------
 
     return {
         "portal": "pracuj",
@@ -919,6 +760,8 @@ def extract_job_from_raw_item(
         "location": location,
         "work_mode": work_mode,
         "work_type": work_type,
+        "experience_level": experience_level,
+        "contract_type": contract_type,
         "salary": salary,
         "url": url,
         "keyword": keyword,
@@ -927,22 +770,49 @@ def extract_job_from_raw_item(
 
 
 # =========================================================
-# POBRANIE JEDNEJ STRONY
+# URL
+# =========================================================
+
+def build_pracuj_url(
+    keyword,
+    page_number=1,
+):
+    """
+    Buduje URL wyszukiwania Pracuj.pl.
+    """
+
+    encoded_keyword = quote(
+        keyword.strip(),
+        safe="",
+    )
+
+    url = (
+        f"{PRACUJ_BASE_URL}/praca/"
+        f"{encoded_keyword}%3Bkw"
+    )
+
+    if page_number > 1:
+
+        url += (
+            f"?pn={page_number}"
+        )
+
+    return url
+
+
+# =========================================================
+# JEDNA STRONA
 # =========================================================
 
 def scrape_pracuj_page(
     page,
     keyword,
-    page_number,
+    page_number=1,
 ):
     """
-    Pobiera jedną stronę wyników Pracuj.pl.
+    Pobiera jedną stronę wyników.
 
-    Zwraca:
-        jobs
-        page_ok
-        current_page
-        total_pages
+    Na obecnym etapie używamy tylko strony 1.
     """
 
     url = build_pracuj_url(
@@ -985,11 +855,9 @@ def scrape_pracuj_page(
             f"ładowania: {url}"
         )
 
-        block_reason = (
-            detect_pracuj_block(
-                None,
-                page,
-            )
+        block_reason = detect_pracuj_block(
+            None,
+            page,
         )
 
         if block_reason:
@@ -998,7 +866,7 @@ def scrape_pracuj_page(
                 block_reason
             )
 
-        return [], False, page_number, 0
+        return [], False
 
     # -----------------------------------------------------
     # BLOKADA
@@ -1061,47 +929,13 @@ def scrape_pracuj_page(
             )
 
         print(
-            "Nie znaleziono linków "
-            "do ofert na stronie."
+            "Nie znaleziono ofert."
         )
 
-        return [], False, page_number, 0
+        return [], False
 
     # -----------------------------------------------------
-    # LICZBA STRON
-    # -----------------------------------------------------
-
-    total_pages = PRACUJ_MAX_PAGES
-
-    try:
-
-        body_text = page.locator(
-            "body"
-        ).inner_text(
-            timeout=5000
-        )
-
-        match = re.search(
-            r"Strona\s+\d+\s+z\s+(\d+)",
-            body_text,
-            re.IGNORECASE,
-        )
-
-        if match:
-
-            total_pages = min(
-                int(
-                    match.group(1)
-                ),
-                PRACUJ_MAX_PAGES,
-            )
-
-    except Exception:
-
-        pass
-
-    # -----------------------------------------------------
-    # DOM
+    # POBIERZ LINKI
     # -----------------------------------------------------
 
     raw_jobs = page.evaluate(
@@ -1126,23 +960,66 @@ def scrape_pracuj_page(
                         return null;
                     }
 
+                    /*
+                    * Szukamy możliwie najbliższej
+                    * karty oferty.
+                    *
+                    * Kolejność:
+                    * 1. article
+                    * 2. li
+                    * 3. parentElement
+                    */
+
                     const card =
-                        link.closest(
-                            "article"
-                        ) ||
-                        link.closest(
-                            "li"
-                        ) ||
+                        link.closest("article") ||
+                        link.closest("li") ||
                         link.parentElement;
 
                     if (!card) {
                         return null;
                     }
 
+                    /*
+                    * Firma - próbujemy znaleźć
+                    * link do profilu pracodawcy.
+                    */
+
                     const companyLink =
-                        card.querySelector(
-                            "a[href*='pracodawcy.pracuj.pl']"
+                        Array.from(
+                            card.querySelectorAll(
+                                "a"
+                            )
+                        )
+                        .find(
+                            (a) =>
+                                (
+                                    a.getAttribute(
+                                        "href"
+                                    ) || ""
+                                ).includes(
+                                    "pracodawcy.pracuj.pl"
+                                )
                         );
+
+                    /*
+                    * Nagłówki znajdujące się
+                    * wewnątrz karty.
+                    */
+
+                    const headings =
+                        Array.from(
+                            card.querySelectorAll(
+                                "h1, h2, h3, h4"
+                            )
+                        )
+                        .map(
+                            (element) =>
+                                (
+                                    element.innerText
+                                    || ""
+                                ).trim()
+                        )
+                        .filter(Boolean);
 
                     return {
 
@@ -1163,6 +1040,9 @@ def scrape_pracuj_page(
                                 ).trim()
                                 : "",
 
+                        headings:
+                            headings,
+
                         cardText:
                             (
                                 card.innerText
@@ -1174,6 +1054,7 @@ def scrape_pracuj_page(
         }
         """
     )
+    
 
     print(
         "Znaleziono elementów "
@@ -1184,13 +1065,13 @@ def scrape_pracuj_page(
     if not raw_jobs:
 
         print(
-            "Brak ofert na tej stronie."
+            "Brak ofert na stronie."
         )
 
-        return [], False, page_number, total_pages
+        return [], False
 
     # -----------------------------------------------------
-    # NORMALIZACJA
+    # DEDUPLIKACJA
     # -----------------------------------------------------
 
     jobs = []
@@ -1201,11 +1082,9 @@ def scrape_pracuj_page(
 
         try:
 
-            job = (
-                extract_job_from_raw_item(
-                    item,
-                    keyword,
-                )
+            job = extract_job_from_raw_item(
+                item,
+                keyword,
             )
 
         except Exception as error:
@@ -1221,11 +1100,15 @@ def scrape_pracuj_page(
         if not job:
             continue
 
-        if job["source_id"] in seen:
+        source_id = job[
+            "source_id"
+        ]
+
+        if source_id in seen:
             continue
 
         seen.add(
-            job["source_id"]
+            source_id
         )
 
         jobs.append(
@@ -1237,37 +1120,61 @@ def scrape_pracuj_page(
         f"{len(jobs)}"
     )
 
+    # -----------------------------------------------------
+    # PODGLĄD PIERWSZEJ OFERTY
+    # -----------------------------------------------------
+
     if jobs:
 
         first = jobs[0]
 
         print(
-            "\n--- PODGLĄD PRACUJ ---"
+            "\n--- PODGLĄD PIERWSZEJ OFERTY ---"
         )
 
         print(
-            f"Tytuł: {first['title']}"
+            f"Tytuł: "
+            f"{first.get('title')}"
         )
 
         print(
-            f"Firma: {first['company']}"
+            f"Firma: "
+            f"{first.get('company')}"
         )
 
         print(
-            f"Lokalizacja: {first['location']}"
+            f"Lokalizacja: "
+            f"{first.get('location')}"
         )
 
         print(
-            f"Tryb: {first['work_mode']}"
+            f"Tryb: "
+            f"{first.get('work_mode')}"
         )
 
         print(
-            f"Wynagrodzenie: {first['salary']}"
+            f"Typ: "
+            f"{first.get('work_type')}"
+        )
+
+        print(
+            f"Poziom: "
+            f"{first.get('experience_level')}"
+        )
+
+        print(
+            f"Umowa: "
+            f"{first.get('contract_type')}"
+        )
+
+        print(
+            f"Wynagrodzenie: "
+            f"{first.get('salary')}"
         )
 
         print(
             f"Opublikowano: "
-            f"{first['published_at']}"
+            f"{first.get('published_at')}"
         )
 
         print(
@@ -1277,8 +1184,6 @@ def scrape_pracuj_page(
     return (
         jobs,
         True,
-        page_number,
-        total_pages,
     )
 
 
@@ -1293,137 +1198,93 @@ def scrape_pracuj(
     max_delay,
 ):
     """
-    Przechodzi przez wszystkie strony wyników
-    dla jednego słowa kluczowego.
-
-    Zwraca:
-        jobs
-        seen_source_ids
-        scan_complete
+    Na obecnym etapie pobierana jest tylko pierwsza
+    strona danego wyszukiwania.
     """
 
     all_jobs = []
 
     seen_source_ids = set()
 
-    scan_complete = True
+    try:
 
-    first_page = 1
-    total_pages = 1
+        (
+            jobs,
+            page_ok,
+        ) = scrape_pracuj_page(
+            page=page,
+            keyword=keyword,
+            page_number=1,
+        )
 
-    current_page = first_page
+    except PracujBlockedError:
 
-    while (
-        current_page <= total_pages
-        and current_page <= PRACUJ_MAX_PAGES
-    ):
+        raise
 
-        # ---------------------------------------------
-        # PRZERWA MIĘDZY STRONAMI
-        # ---------------------------------------------
+    except Exception as error:
 
-        if current_page > 1:
+        print(
+            "[ERROR] Pracuj.pl "
+            f"dla '{keyword}': "
+            f"{error}"
+        )
 
-            import random
-            import time
+        return (
+            [],
+            set(),
+            False,
+        )
 
-            delay = random.uniform(
-                min_delay,
-                max_delay,
-            )
+    if not page_ok:
 
-            print(
-                "\nPrzerwa przed "
-                "kolejną stroną Pracuj.pl: "
-                f"{delay:.1f} s"
-            )
+        return (
+            [],
+            set(),
+            False,
+        )
 
-            time.sleep(
-                delay
-            )
+    # -----------------------------------------------------
+    # ZAPIS ZNALEZIONYCH OFERT
+    # -----------------------------------------------------
 
-        try:
+    for job in jobs:
 
-            (
-                jobs,
-                page_ok,
-                current,
-                detected_total_pages,
-            ) = scrape_pracuj_page(
-                page=page,
-                keyword=keyword,
-                page_number=current_page,
-            )
+        source_id = job[
+            "source_id"
+        ]
 
-            if detected_total_pages:
-                total_pages = min(
-                    detected_total_pages,
-                    PRACUJ_MAX_PAGES,
-                )
+        if source_id in seen_source_ids:
+            continue
 
-            if not page_ok:
+        seen_source_ids.add(
+            source_id
+        )
 
-                scan_complete = False
-
-                break
-
-            for job in jobs:
-
-                if (
-                    job["source_id"]
-                    in seen_source_ids
-                ):
-                    continue
-
-                seen_source_ids.add(
-                    job["source_id"]
-                )
-
-                all_jobs.append(
-                    job
-                )
-
-        except PracujBlockedError:
-
-            scan_complete = False
-
-            raise
-
-        except Exception as error:
-
-            print(
-                "[ERROR] Pracuj.pl "
-                f"strona {current_page}: "
-                f"{error}"
-            )
-
-            scan_complete = False
-
-            break
-
-        current_page += 1
+        all_jobs.append(
+            job
+        )
 
     print(
         "\nPracuj.pl → "
         f"{keyword}: łącznie "
-        f"{len(all_jobs)} unikalnych ofert"
+        f"{len(all_jobs)} "
+        "unikalnych ofert"
     )
 
     print(
-        f"Pracuj.pl → liczba stron "
-        f"przetworzonych: "
-        f"{current_page - 1}"
+        "Pracuj.pl → "
+        "pobrano tylko stronę 1."
     )
 
     return (
         all_jobs,
         seen_source_ids,
-        scan_complete,
+        True,
     )
 
 
 # =========================================================
-# SZCZEGÓŁY
+# SZCZEGÓŁY OFERTY
 # =========================================================
 
 def scrape_pracuj_details(
@@ -1431,7 +1292,10 @@ def scrape_pracuj_details(
     job,
 ):
     """
-    Pobiera szczegóły pojedynczej oferty Pracuj.pl.
+    Pobiera szczegóły pojedynczej oferty.
+
+    Funkcja pozostaje dostępna, ale jest wyłączona
+    przez RUN_PRACUJ_DETAILS = False.
     """
 
     url = job["url"]
@@ -1440,10 +1304,6 @@ def scrape_pracuj_details(
         f"[SZCZEGÓŁY PRACUJ] "
         f"{job['title']}"
     )
-
-    # -----------------------------------------------------
-    # OTWARCIE
-    # -----------------------------------------------------
 
     try:
 
@@ -1464,11 +1324,9 @@ def scrape_pracuj_details(
             f"szczegółowej: {url}"
         )
 
-        block_reason = (
-            detect_pracuj_block(
-                None,
-                page,
-            )
+        block_reason = detect_pracuj_block(
+            None,
+            page,
         )
 
         if block_reason:
@@ -1478,10 +1336,6 @@ def scrape_pracuj_details(
             )
 
         return None
-
-    # -----------------------------------------------------
-    # BLOKADA
-    # -----------------------------------------------------
 
     block_reason = detect_pracuj_block(
         response,
@@ -1493,10 +1347,6 @@ def scrape_pracuj_details(
         raise PracujBlockedError(
             block_reason
         )
-
-    # -----------------------------------------------------
-    # TEKST STRONY
-    # -----------------------------------------------------
 
     try:
 
@@ -1524,7 +1374,7 @@ def scrape_pracuj_details(
         return None
 
     # -----------------------------------------------------
-    # TYTUŁ
+    # PODSTAWOWE DANE
     # -----------------------------------------------------
 
     title = None
@@ -1540,122 +1390,75 @@ def scrape_pracuj_details(
         )
 
     except Exception:
-
         pass
 
     if not title:
-
         title = job["title"]
 
-    # -----------------------------------------------------
-    # FIRMA
-    # -----------------------------------------------------
-
-    company = job["company"]
-
-    try:
-
-        company_link = page.locator(
-            "a[href*='pracodawcy.pracuj.pl']"
-        ).first
-
-        if company_link.count() > 0:
-
-            company_value = clean_text(
-                company_link.inner_text(
-                    timeout=3000
-                )
-            )
-
-            if company_value:
-                company = company_value
-
-    except Exception:
-
-        pass
-
-    # -----------------------------------------------------
-    # DATA PUBLIKACJI
-    # -----------------------------------------------------
+    company = job.get(
+        "company"
+    )
 
     published_at = (
-        parse_published_date_text(
+        parse_published_date(
             body_text
         )
-        or job["published_at"]
+        or job.get("published_at")
     )
 
-    # -----------------------------------------------------
-    # LOKALIZACJA
-    # -----------------------------------------------------
-
-    location = find_location(
-        lines,
-        company,
+    location = (
+        find_location(lines)
+        or job.get("location")
     )
-
-    if not location:
-        location = job["location"]
-
-    # -----------------------------------------------------
-    # PODSTAWOWE DANE
-    # -----------------------------------------------------
 
     work_mode = (
         find_work_mode(lines)
-        or job["work_mode"]
+        or job.get("work_mode")
     )
 
     work_type = (
         find_work_type(lines)
-        or job["work_type"]
+        or job.get("work_type")
     )
 
     experience_level = (
-        find_experience_level(
-            lines
-        )
+        find_experience_level(lines)
+        or job.get("experience_level")
     )
 
     contract_type = (
-        find_contract_type(
-            lines
-        )
+        find_contract_type(lines)
+        or job.get("contract_type")
     )
 
     salary = (
         find_salary(lines)
-        or job["salary"]
+        or job.get("salary")
     )
 
     # -----------------------------------------------------
-    # OPIS
+    # SEKCJE
     # -----------------------------------------------------
 
-    job_description = (
-        extract_section(
-            lines,
-            [
-                "twój zakres obowiązków",
-                "zakres obowiązków",
-                "twoje zadania",
-                "obowiązki",
-                "responsibilities",
-            ],
-            [
-                "nasze wymagania",
-                "wymagania",
-                "wymagane umiejętności",
-                "oferujemy",
-                "benefity",
-                "benefits",
-            ],
-        )
+    job_description = extract_section(
+        lines,
+        [
+            "twój zakres obowiązków",
+            "zakres obowiązków",
+            "twoje zadania",
+            "obowiązki",
+            "responsibilities",
+        ],
+        [
+            "nasze wymagania",
+            "wymagania",
+            "oferujemy",
+            "benefity",
+            "benefits",
+            "o firmie",
+            "about the company",
+        ],
     )
-
-    # -----------------------------------------------------
-    # WYMAGANIA / TECHNOLOGIE
-    # -----------------------------------------------------
 
     requirements = extract_section(
         lines,
@@ -1674,28 +1477,18 @@ def scrape_pracuj_details(
         ],
     )
 
-    # -----------------------------------------------------
-    # O FIRMIE
-    # -----------------------------------------------------
-
     about_company = extract_section(
         lines,
         [
             "o firmie",
             "about the company",
-            "oferujemy",
         ],
         [
             "benefity",
             "benefits",
             "aplikuj",
-            "aplikowanie",
         ],
     )
-
-    # -----------------------------------------------------
-    # INFORMACJE O LOKALIZACJI
-    # -----------------------------------------------------
 
     office_location = None
 
@@ -1703,10 +1496,8 @@ def scrape_pracuj_details(
 
         normalized = line.lower()
 
-        if (
-            normalized.startswith(
-                "miejsce pracy:"
-            )
+        if normalized.startswith(
+            "miejsce pracy:"
         ):
 
             office_location = line[
@@ -1715,28 +1506,42 @@ def scrape_pracuj_details(
 
             break
 
-    # -----------------------------------------------------
-    # WYGAŚNIĘCIE
-    # -----------------------------------------------------
+    expires_text = None
+    expires_at = None
 
-    expires_text, expires_at = (
-        find_expiration(lines)
-    )
+    for line in lines:
 
-    # -----------------------------------------------------
-    # TECH STACK
-    # -----------------------------------------------------
-    #
-    # Pracuj nie ma jednolitego pola "Tech stack"
-    # dla wszystkich ofert. Na tym etapie zapisujemy
-    # wymagania jako tech_stack, jeżeli są dostępne.
-    #
+        normalized = line.lower()
 
-    tech_stack = requirements
+        if (
+            "oferta wygasa" in normalized
+            or "ważna do" in normalized
+            or "ważne do" in normalized
+        ):
 
-    # -----------------------------------------------------
-    # WYNIK
-    # -----------------------------------------------------
+            expires_text = line
+
+            match = re.search(
+                r"(\d{1,2})[.\-/]"
+                r"(\d{1,2})[.\-/]"
+                r"(\d{4})",
+                line,
+            )
+
+            if match:
+
+                try:
+
+                    expires_at = datetime(
+                        int(match.group(3)),
+                        int(match.group(2)),
+                        int(match.group(1)),
+                    )
+
+                except ValueError:
+                    pass
+
+            break
 
     return {
         "title": title,
@@ -1749,9 +1554,76 @@ def scrape_pracuj_details(
         "salary": salary,
         "published_at": published_at,
         "job_description": job_description,
-        "tech_stack": tech_stack,
+        "tech_stack": requirements,
         "office_location": office_location,
         "about_company": about_company,
         "expires_text": expires_text,
         "expires_at": expires_at,
     }
+
+
+# =========================================================
+# SEKCJE
+# =========================================================
+
+def extract_section(
+    lines,
+    start_patterns,
+    end_patterns,
+):
+    """
+    Wyciąga tekst pomiędzy sekcjami.
+    """
+
+    start_index = None
+
+    for index, line in enumerate(lines):
+
+        normalized = (
+            line
+            .lower()
+            .strip()
+        )
+
+        if any(
+            pattern in normalized
+            for pattern in start_patterns
+        ):
+
+            start_index = index + 1
+            break
+
+    if start_index is None:
+        return None
+
+    end_index = len(lines)
+
+    for index in range(
+        start_index,
+        len(lines),
+    ):
+
+        normalized = (
+            lines[index]
+            .lower()
+            .strip()
+        )
+
+        if any(
+            pattern in normalized
+            for pattern in end_patterns
+        ):
+
+            end_index = index
+            break
+
+    section = lines[
+        start_index:end_index
+    ]
+
+    if not section:
+        return None
+
+    return "\n".join(
+        section
+    ).strip()

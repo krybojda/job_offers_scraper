@@ -9,8 +9,7 @@ SCRAPE_INTERVAL = int(
     os.getenv("SCRAPE_INTERVAL", "3600")
 )
 
-# Przerwa między kolejnymi stronami /
-# wyszukiwaniami.
+# Przerwa między kolejnymi wyszukiwaniami.
 MIN_DELAY = int(
     os.getenv("SCRAPER_MIN_DELAY", "20")
 )
@@ -28,14 +27,14 @@ DETAIL_MAX_DELAY = int(
     os.getenv("DETAIL_MAX_DELAY", "60")
 )
 
-# Maksymalna liczba stron szczegółowych
-# pobieranych w jednym normalnym przebiegu.
+# Maksymalna liczba szczegółów pobieranych
+# w jednym przebiegu.
 MAX_DETAILS_PER_RUN = int(
     os.getenv("MAX_DETAILS_PER_RUN", "20")
 )
 
-# Po ilu pełnych przebiegach bez znalezienia
-# oferta zostanie oznaczona jako nieaktywna.
+# Po ilu pełnych poprawnych przebiegach
+# oferta staje się nieaktywna.
 MISSED_THRESHOLD = int(
     os.getenv("MISSED_THRESHOLD", "3")
 )
@@ -58,14 +57,13 @@ PRACUJ_BASE_URL = (
     "https://www.pracuj.pl"
 )
 
-# Maksymalna liczba stron wyników
-# dla pojedynczego słowa kluczowego.
+# Na tym etapie CELOWO tylko jedna strona.
 #
-# Jeżeli Pracuj pokaże mniej stron,
-# scraper zakończy wcześniej.
-PRACUJ_MAX_PAGES = int(
-    os.getenv("PRACUJ_MAX_PAGES", "10")
-)
+# Pracuj obecnie zwraca 403 przy próbie przejścia
+# do kolejnej strony z naszego automatycznego klienta.
+#
+# Gdy dopracujemy bezpieczną paginację, zmienimy na >1.
+PRACUJ_MAX_PAGES = 1
 
 
 # =========================================================

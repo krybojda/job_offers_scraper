@@ -47,27 +47,29 @@ from pracuj import (
 # WŁĄCZANIE / WYŁĄCZANIE PORTALI
 # =========================================================
 #
-# True  = portal aktywny
-# False = portal wyłączony
+# Portal:
+#     True  = włączony
+#     False = wyłączony
 #
-# Aby np. testować tylko Pracuj:
+# Szczegóły:
+#     True  = pobieraj strony szczegółowe
+#     False = nie pobieraj stron szczegółowych
+#
+# Przykład: tylko lista Pracuj:
 #
 # RUN_JUSTJOIN = False
+# RUN_JUSTJOIN_DETAILS = False
+#
 # RUN_PRACUJ = True
+# RUN_PRACUJ_DETAILS = False
 #
-# Aby testować tylko Just Join:
-#
-# RUN_JUSTJOIN = True
-# RUN_PRACUJ = False
-#
-# Aby uruchomić oba:
-#
-# RUN_JUSTJOIN = True
-# RUN_PRACUJ = True
 # =========================================================
 
 RUN_JUSTJOIN = False
+RUN_JUSTJOIN_DETAILS = False
+
 RUN_PRACUJ = True
+RUN_PRACUJ_DETAILS = False
 
 
 def process_jobs(
@@ -83,7 +85,7 @@ def process_jobs(
     for job in jobs:
 
         # -------------------------------------------------
-        # Oferta została znaleziona.
+        # ZNALEZIONA OFERTA
         # -------------------------------------------------
 
         total_stats["seen"] += 1
@@ -117,7 +119,7 @@ def process_jobs(
         total_stats["saved"] += 1
 
         # -------------------------------------------------
-        # SZCZEGÓŁY
+        # KOLEJKA SZCZEGÓŁÓW
         # -------------------------------------------------
 
         if (
@@ -136,9 +138,9 @@ def retry_details():
     Ponownie pobiera szczegóły ofert,
     które mają details_scraped_at = NULL.
 
-    Respektuje:
-        RUN_JUSTJOIN
-        RUN_PRACUJ
+    Respektuje niezależne flagi:
+        RUN_JUSTJOIN_DETAILS
+        RUN_PRACUJ_DETAILS
     """
 
     print(
@@ -164,12 +166,15 @@ def retry_details():
         )
 
     # -----------------------------------------------------
-    # LISTA AKTYWNYCH PORTALI
+    # AKTYWNE PORTALE DLA RETRY
     # -----------------------------------------------------
 
     portals = []
 
-    if RUN_JUSTJOIN:
+    if (
+        RUN_JUSTJOIN
+        and RUN_JUSTJOIN_DETAILS
+    ):
 
         portals.append(
             (
@@ -179,7 +184,10 @@ def retry_details():
             )
         )
 
-    if RUN_PRACUJ:
+    if (
+        RUN_PRACUJ
+        and RUN_PRACUJ_DETAILS
+    ):
 
         portals.append(
             (
@@ -192,7 +200,8 @@ def retry_details():
     if not portals:
 
         print(
-            "Brak włączonych portali."
+            "Brak portali z włączonym "
+            "pobieraniem szczegółów."
         )
 
         print(
@@ -226,11 +235,11 @@ def retry_details():
 
         try:
 
-            for portal, detail_function, block_error in portals:
-
-                # -------------------------------------------------
-                # OFERTY BEZ SZCZEGÓŁÓW
-                # -------------------------------------------------
+            for (
+                portal,
+                detail_function,
+                block_error,
+            ) in portals:
 
                 jobs = get_jobs_without_details(
                     portal=portal,
@@ -248,10 +257,6 @@ def retry_details():
 
                 if not jobs:
                     continue
-
-                # -------------------------------------------------
-                # POBIERANIE SZCZEGÓŁÓW
-                # -------------------------------------------------
 
                 for index, job in enumerate(
                     jobs
@@ -347,9 +352,8 @@ def run_scrape():
     """
     Wykonuje jeden pełny przebieg.
 
-    Uruchamiane portale zależą od:
-        RUN_JUSTJOIN
-        RUN_PRACUJ
+    Portale i ich strony szczegółowe
+    są sterowane niezależnymi flagami.
     """
 
     print(
@@ -395,6 +399,10 @@ def run_scrape():
             f"  - {keyword}"
         )
 
+    # -----------------------------------------------------
+    # STATUS PORTALI
+    # -----------------------------------------------------
+
     print(
         "\nAktywne portale:"
     )
@@ -405,8 +413,18 @@ def run_scrape():
     )
 
     print(
+        f"    szczegóły: "
+        f"{'TAK' if RUN_JUSTJOIN_DETAILS else 'NIE'}"
+    )
+
+    print(
         f"  Pracuj.pl: "
         f"{'TAK' if RUN_PRACUJ else 'NIE'}"
+    )
+
+    print(
+        f"    szczegóły: "
+        f"{'TAK' if RUN_PRACUJ_DETAILS else 'NIE'}"
     )
 
     # =====================================================
@@ -431,11 +449,6 @@ def run_scrape():
 
     # =====================================================
     # ZMIENNE PORTALI
-    # =====================================================
-    #
-    # Tworzymy je zawsze, nawet gdy portal jest wyłączony.
-    # Dzięki temu późniejsze części programu nie dostaną
-    # UnboundLocalError.
     # =====================================================
 
     justjoin_seen_ids = set()
@@ -465,8 +478,6 @@ def run_scrape():
             locale="pl-PL",
         )
 
-        # Strony tworzymy zawsze.
-        # Samo utworzenie strony nie oznacza scrapowania.
         justjoin_page = context.new_page()
         pracuj_page = context.new_page()
 
@@ -502,10 +513,6 @@ def run_scrape():
                     keywords
                 ):
 
-                    # -----------------------------------------
-                    # PRZERWA
-                    # -----------------------------------------
-
                     if index > 0:
 
                         delay = random.uniform(
@@ -524,10 +531,6 @@ def run_scrape():
                             delay
                         )
 
-                    # -----------------------------------------
-                    # SCRAPING
-                    # -----------------------------------------
-
                     try:
 
                         (
@@ -539,19 +542,12 @@ def run_scrape():
                         )
 
                         if not page_ok:
-
                             justjoin_complete = False
-
-                        # -------------------------------------
-                        # OFERTY
-                        # -------------------------------------
 
                         for job in jobs:
 
                             justjoin_seen_ids.add(
-                                job[
-                                    "source_id"
-                                ]
+                                job["source_id"]
                             )
 
                         process_jobs(
@@ -599,9 +595,9 @@ def run_scrape():
                             f"{error}"
                         )
 
-                # ---------------------------------------------
+                # -------------------------------------------------
                 # MISSED COUNT
-                # ---------------------------------------------
+                # -------------------------------------------------
 
                 if justjoin_complete:
 
@@ -626,8 +622,7 @@ def run_scrape():
             else:
 
                 print(
-                    "\n[JUST JOIN] "
-                    "WYŁĄCZONE"
+                    "\n[JUST JOIN] WYŁĄCZONE"
                 )
 
             # =================================================
@@ -652,10 +647,6 @@ def run_scrape():
                     keywords
                 ):
 
-                    # -----------------------------------------
-                    # PRZERWA
-                    # -----------------------------------------
-
                     delay = random.uniform(
                         MIN_DELAY,
                         MAX_DELAY,
@@ -670,10 +661,6 @@ def run_scrape():
                     time.sleep(
                         delay
                     )
-
-                    # -----------------------------------------
-                    # SCRAPING
-                    # -----------------------------------------
 
                     try:
 
@@ -741,9 +728,9 @@ def run_scrape():
                             f"{error}"
                         )
 
-                # ---------------------------------------------
+                # -------------------------------------------------
                 # MISSED COUNT
-                # ---------------------------------------------
+                # -------------------------------------------------
 
                 if pracuj_complete:
 
@@ -768,15 +755,17 @@ def run_scrape():
             else:
 
                 print(
-                    "\n[PRACUJ.PL] "
-                    "WYŁĄCZONE"
+                    "\n[PRACUJ.PL] WYŁĄCZONE"
                 )
 
             # =================================================
             # SZCZEGÓŁY JUST JOIN
             # =================================================
 
-            if RUN_JUSTJOIN:
+            if (
+                RUN_JUSTJOIN
+                and RUN_JUSTJOIN_DETAILS
+            ):
 
                 print(
                     "\n========================================"
@@ -863,11 +852,21 @@ def run_scrape():
                             f"szczegóły: {error}"
                         )
 
+            elif RUN_JUSTJOIN:
+
+                print(
+                    "\n[JUST JOIN] "
+                    "SZCZEGÓŁY WYŁĄCZONE"
+                )
+
             # =================================================
             # SZCZEGÓŁY PRACUJ
             # =================================================
 
-            if RUN_PRACUJ:
+            if (
+                RUN_PRACUJ
+                and RUN_PRACUJ_DETAILS
+            ):
 
                 print(
                     "\n========================================"
@@ -954,7 +953,7 @@ def run_scrape():
                             f"szczegóły: {error}"
                         )
 
-            else:
+            elif RUN_PRACUJ:
 
                 print(
                     "\n[PRACUJ.PL] "
