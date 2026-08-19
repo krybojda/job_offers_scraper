@@ -6,3 +6,5 @@ sre
 administrator
 Administrador it
 Administrador sieci
+kierowca wrocław
+b+e wrocław
