@@ -9,7 +9,8 @@ SCRAPE_INTERVAL = int(
     os.getenv("SCRAPE_INTERVAL", "3600")
 )
 
-# Przerwa pomiędzy wyszukiwaniami.
+# Przerwa między kolejnymi stronami /
+# wyszukiwaniami.
 MIN_DELAY = int(
     os.getenv("SCRAPER_MIN_DELAY", "20")
 )
@@ -18,7 +19,7 @@ MAX_DELAY = int(
     os.getenv("SCRAPER_MAX_DELAY", "40")
 )
 
-# Przerwa przed wejściem na stronę szczegółowej oferty.
+# Przerwa między stronami szczegółowymi.
 DETAIL_MIN_DELAY = int(
     os.getenv("DETAIL_MIN_DELAY", "30")
 )
@@ -28,13 +29,13 @@ DETAIL_MAX_DELAY = int(
 )
 
 # Maksymalna liczba stron szczegółowych
-# pobieranych w jednym przebiegu.
+# pobieranych w jednym normalnym przebiegu.
 MAX_DETAILS_PER_RUN = int(
     os.getenv("MAX_DETAILS_PER_RUN", "20")
 )
 
-# Po ilu pełnych przebiegach brak oferty
-# oznacza ją jako nieaktywną.
+# Po ilu pełnych przebiegach bez znalezienia
+# oferta zostanie oznaczona jako nieaktywna.
 MISSED_THRESHOLD = int(
     os.getenv("MISSED_THRESHOLD", "3")
 )
@@ -44,7 +45,27 @@ MISSED_THRESHOLD = int(
 # JUST JOIN IT
 # =========================================================
 
-JUSTJOIN_BASE_URL = "https://justjoin.it"
+JUSTJOIN_BASE_URL = (
+    "https://justjoin.it"
+)
+
+
+# =========================================================
+# PRACUJ.PL
+# =========================================================
+
+PRACUJ_BASE_URL = (
+    "https://www.pracuj.pl"
+)
+
+# Maksymalna liczba stron wyników
+# dla pojedynczego słowa kluczowego.
+#
+# Jeżeli Pracuj pokaże mniej stron,
+# scraper zakończy wcześniej.
+PRACUJ_MAX_PAGES = int(
+    os.getenv("PRACUJ_MAX_PAGES", "10")
+)
 
 
 # =========================================================
@@ -64,6 +85,10 @@ USER_AGENT = (
 # PLIKI
 # =========================================================
 
-KEYWORDS_FILE = "keywords.txt"
+KEYWORDS_FILE = (
+    "keywords.txt"
+)
 
-IGNORED_KEYWORDS_FILE = "ignored_keywords.txt"
+IGNORED_KEYWORDS_FILE = (
+    "ignored_keywords.txt"
+)

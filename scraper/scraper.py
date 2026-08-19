@@ -36,50 +36,163 @@ from justjoin import (
     scrape_justjoin_page,
 )
 
+from pracuj import (
+    PracujBlockedError,
+    scrape_pracuj,
+    scrape_pracuj_details,
+)
+
+
+# =========================================================
+# WŁĄCZANIE / WYŁĄCZANIE PORTALI
+# =========================================================
+#
+# True  = portal aktywny
+# False = portal wyłączony
+#
+# Aby np. testować tylko Pracuj:
+#
+# RUN_JUSTJOIN = False
+# RUN_PRACUJ = True
+#
+# Aby testować tylko Just Join:
+#
+# RUN_JUSTJOIN = True
+# RUN_PRACUJ = False
+#
+# Aby uruchomić oba:
+#
+# RUN_JUSTJOIN = True
+# RUN_PRACUJ = True
+# =========================================================
+
+RUN_JUSTJOIN = False
+RUN_PRACUJ = True
+
+
+def process_jobs(
+    jobs,
+    ignored_keywords,
+    details_queue,
+    total_stats,
+):
+    """
+    Wspólna obsługa ofert niezależnie od portalu.
+    """
+
+    for job in jobs:
+
+        # -------------------------------------------------
+        # Oferta została znaleziona.
+        # -------------------------------------------------
+
+        total_stats["seen"] += 1
+
+        # -------------------------------------------------
+        # FILTR IGNOROWANYCH
+        # -------------------------------------------------
+
+        if is_ignored_job(
+            job["title"],
+            ignored_keywords,
+        ):
+
+            print(
+                "[IGNORUJ] "
+                f"{job['title']}"
+            )
+
+            total_stats["ignored"] += 1
+
+            continue
+
+        # -------------------------------------------------
+        # MYSQL
+        # -------------------------------------------------
+
+        result = save_job(
+            job
+        )
+
+        total_stats["saved"] += 1
+
+        # -------------------------------------------------
+        # SZCZEGÓŁY
+        # -------------------------------------------------
+
+        if (
+            result["needs_details"]
+            and len(details_queue)
+            < MAX_DETAILS_PER_RUN
+        ):
+
+            details_queue.append(
+                job
+            )
+
 
 def retry_details():
     """
     Ponownie pobiera szczegóły ofert,
     które mają details_scraped_at = NULL.
 
-    Nie korzysta z keywords.txt ani
-    ignored_keywords.txt.
+    Respektuje:
+        RUN_JUSTJOIN
+        RUN_PRACUJ
     """
 
     print(
         "\n========================================"
     )
+
     print(
         "PONOWNE POBIERANIE SZCZEGÓŁÓW"
     )
+
     print(
         "========================================"
     )
 
-    # -----------------------------------------
+    # -----------------------------------------------------
     # MYSQL
-    # -----------------------------------------
+    # -----------------------------------------------------
 
     if not wait_for_mysql():
+
         raise RuntimeError(
             "Nie udało się połączyć z MySQL."
         )
 
-    jobs = get_jobs_without_details(
-        portal="justjoin",
-        limit=MAX_DETAILS_PER_RUN,
-    )
+    # -----------------------------------------------------
+    # LISTA AKTYWNYCH PORTALI
+    # -----------------------------------------------------
 
-    print(
-        "Ofert bez szczegółów: "
-        f"{len(jobs)}"
-    )
+    portals = []
 
-    if not jobs:
+    if RUN_JUSTJOIN:
+
+        portals.append(
+            (
+                "justjoin",
+                scrape_justjoin_details,
+                PortalBlockedError,
+            )
+        )
+
+    if RUN_PRACUJ:
+
+        portals.append(
+            (
+                "pracuj",
+                scrape_pracuj_details,
+                PracujBlockedError,
+            )
+        )
+
+    if not portals:
 
         print(
-            "Brak ofert wymagających "
-            "ponownego pobrania."
+            "Brak włączonych portali."
         )
 
         print(
@@ -88,9 +201,11 @@ def retry_details():
 
         return
 
-    # -----------------------------------------
+    total_processed = 0
+
+    # -----------------------------------------------------
     # PLAYWRIGHT
-    # -----------------------------------------
+    # -----------------------------------------------------
 
     with sync_playwright() as playwright:
 
@@ -111,81 +226,111 @@ def retry_details():
 
         try:
 
-            for index, job in enumerate(
-                jobs
-            ):
+            for portal, detail_function, block_error in portals:
 
-                # -----------------------------------------
-                # PRZERWA
-                # -----------------------------------------
+                # -------------------------------------------------
+                # OFERTY BEZ SZCZEGÓŁÓW
+                # -------------------------------------------------
 
-                if index > 0:
+                jobs = get_jobs_without_details(
+                    portal=portal,
+                    limit=MAX_DETAILS_PER_RUN,
+                )
 
-                    delay = random.uniform(
-                        DETAIL_MIN_DELAY,
-                        DETAIL_MAX_DELAY,
-                    )
+                print(
+                    f"\nPortal: {portal}"
+                )
 
-                    print(
-                        "\nPrzerwa przed "
-                        "kolejną ofertą szczegółową: "
-                        f"{delay:.1f} s"
-                    )
+                print(
+                    "Ofert bez szczegółów: "
+                    f"{len(jobs)}"
+                )
 
-                    time.sleep(
-                        delay
-                    )
+                if not jobs:
+                    continue
 
-                # -----------------------------------------
-                # POBRANIE SZCZEGÓŁÓW
-                # -----------------------------------------
+                # -------------------------------------------------
+                # POBIERANIE SZCZEGÓŁÓW
+                # -------------------------------------------------
 
-                try:
+                for index, job in enumerate(
+                    jobs
+                ):
 
-                    details = (
-                        scrape_justjoin_details(
-                            page,
-                            job,
-                        )
-                    )
+                    if (
+                        index > 0
+                        or total_processed > 0
+                    ):
 
-                    if details is not None:
-
-                        save_job_details(
-                            portal="justjoin",
-                            source_id=job[
-                                "source_id"
-                            ],
-                            details=details,
+                        delay = random.uniform(
+                            DETAIL_MIN_DELAY,
+                            DETAIL_MAX_DELAY,
                         )
 
-                except PortalBlockedError as error:
+                        print(
+                            "\nPrzerwa przed "
+                            "kolejną ofertą szczegółową: "
+                            f"{delay:.1f} s"
+                        )
 
-                    print(
-                        "\n"
-                        "========================================\n"
-                        "JUST JOIN IT - STOP\n"
-                        "========================================"
-                    )
+                        time.sleep(
+                            delay
+                        )
 
-                    print(
-                        f"Powód: {error}"
-                    )
+                    try:
 
-                    print(
-                        "Przerywam ponowne "
-                        "pobieranie szczegółów."
-                    )
+                        details = (
+                            detail_function(
+                                page,
+                                job,
+                            )
+                        )
 
-                    break
+                        if details is not None:
 
-                except Exception as error:
+                            save_job_details(
+                                portal=portal,
+                                source_id=job[
+                                    "source_id"
+                                ],
+                                details=details,
+                            )
 
-                    print(
-                        "[ERROR] Szczegóły "
-                        f"{job['url']}: "
-                        f"{error}"
-                    )
+                            total_processed += 1
+
+                    except block_error as error:
+
+                        print(
+                            "\n"
+                            "========================================"
+                        )
+
+                        print(
+                            f"{portal.upper()} - STOP"
+                        )
+
+                        print(
+                            "========================================"
+                        )
+
+                        print(
+                            f"Powód: {error}"
+                        )
+
+                        print(
+                            f"Przerywam pobieranie "
+                            f"szczegółów {portal}."
+                        )
+
+                        break
+
+                    except Exception as error:
+
+                        print(
+                            "[ERROR] Szczegóły "
+                            f"{job['url']}: "
+                            f"{error}"
+                        )
 
         finally:
 
@@ -200,41 +345,44 @@ def retry_details():
 
 def run_scrape():
     """
-    Wykonuje jeden pełny przebieg scrapera.
+    Wykonuje jeden pełny przebieg.
+
+    Uruchamiane portale zależą od:
+        RUN_JUSTJOIN
+        RUN_PRACUJ
     """
 
     print(
         "\n========================================"
     )
+
     print(
         "START PRZEBIEGU SCRAPERA"
     )
+
     print(
         "========================================"
     )
 
     # =====================================================
-    # SŁOWA KLUCZOWE
+    # KONFIGURACJA
     # =====================================================
 
     keywords = load_keywords()
+
+    ignored_keywords = (
+        load_ignored_keywords()
+    )
 
     print(
         f"Słowa kluczowe ({len(keywords)}):"
     )
 
     for keyword in keywords:
+
         print(
             f"  - {keyword}"
         )
-
-    # =====================================================
-    # SŁOWA IGNOROWANE
-    # =====================================================
-
-    ignored_keywords = (
-        load_ignored_keywords()
-    )
 
     print(
         "Ignorowane słowa/frazy "
@@ -242,9 +390,24 @@ def run_scrape():
     )
 
     for keyword in ignored_keywords:
+
         print(
             f"  - {keyword}"
         )
+
+    print(
+        "\nAktywne portale:"
+    )
+
+    print(
+        f"  Just Join IT: "
+        f"{'TAK' if RUN_JUSTJOIN else 'NIE'}"
+    )
+
+    print(
+        f"  Pracuj.pl: "
+        f"{'TAK' if RUN_PRACUJ else 'NIE'}"
+    )
 
     # =====================================================
     # MYSQL
@@ -256,21 +419,32 @@ def run_scrape():
             "Nie udało się połączyć z MySQL."
         )
 
-    total_found = 0
-    total_saved = 0
-    total_ignored = 0
-    total_details = 0
+    # =====================================================
+    # STATYSTYKI
+    # =====================================================
 
-    # Wszystkie oferty znalezione w tym
-    # pełnym przebiegu Just Join.
-    seen_source_ids = set()
+    total_stats = {
+        "seen": 0,
+        "saved": 0,
+        "ignored": 0,
+    }
 
-    # Jeżeli skan nie zakończy się poprawnie,
-    # nie aktualizujemy missed_count.
-    scan_complete = True
+    # =====================================================
+    # ZMIENNE PORTALI
+    # =====================================================
+    #
+    # Tworzymy je zawsze, nawet gdy portal jest wyłączony.
+    # Dzięki temu późniejsze części programu nie dostaną
+    # UnboundLocalError.
+    # =====================================================
 
-    # Kolejka ofert wymagających szczegółów.
-    details_queue = []
+    justjoin_seen_ids = set()
+    justjoin_complete = True
+    justjoin_details_queue = []
+
+    pracuj_seen_ids = set()
+    pracuj_complete = True
+    pracuj_details_queue = []
 
     # =====================================================
     # PLAYWRIGHT
@@ -291,24 +465,196 @@ def run_scrape():
             locale="pl-PL",
         )
 
-        search_page = context.new_page()
-        details_page = context.new_page()
+        # Strony tworzymy zawsze.
+        # Samo utworzenie strony nie oznacza scrapowania.
+        justjoin_page = context.new_page()
+        pracuj_page = context.new_page()
+
+        justjoin_details_page = (
+            context.new_page()
+        )
+
+        pracuj_details_page = (
+            context.new_page()
+        )
 
         try:
 
-            # =============================================
-            # JUST JOIN - LISTA OFERT
-            # =============================================
+            # =================================================
+            # JUST JOIN IT
+            # =================================================
 
-            for index, keyword in enumerate(
-                keywords
-            ):
+            if RUN_JUSTJOIN:
 
-                # -----------------------------------------
-                # PRZERWA
-                # -----------------------------------------
+                print(
+                    "\n========================================"
+                )
 
-                if index > 0:
+                print(
+                    "SCRAPOWANIE JUST JOIN IT"
+                )
+
+                print(
+                    "========================================"
+                )
+
+                for index, keyword in enumerate(
+                    keywords
+                ):
+
+                    # -----------------------------------------
+                    # PRZERWA
+                    # -----------------------------------------
+
+                    if index > 0:
+
+                        delay = random.uniform(
+                            MIN_DELAY,
+                            MAX_DELAY,
+                        )
+
+                        print(
+                            "\nPrzerwa przed "
+                            "kolejnym wyszukiwaniem "
+                            "Just Join: "
+                            f"{delay:.1f} s"
+                        )
+
+                        time.sleep(
+                            delay
+                        )
+
+                    # -----------------------------------------
+                    # SCRAPING
+                    # -----------------------------------------
+
+                    try:
+
+                        (
+                            jobs,
+                            page_ok,
+                        ) = scrape_justjoin_page(
+                            justjoin_page,
+                            keyword,
+                        )
+
+                        if not page_ok:
+
+                            justjoin_complete = False
+
+                        # -------------------------------------
+                        # OFERTY
+                        # -------------------------------------
+
+                        for job in jobs:
+
+                            justjoin_seen_ids.add(
+                                job[
+                                    "source_id"
+                                ]
+                            )
+
+                        process_jobs(
+                            jobs=jobs,
+                            ignored_keywords=(
+                                ignored_keywords
+                            ),
+                            details_queue=(
+                                justjoin_details_queue
+                            ),
+                            total_stats=(
+                                total_stats
+                            ),
+                        )
+
+                    except PortalBlockedError as error:
+
+                        justjoin_complete = False
+
+                        print(
+                            "\n"
+                            "========================================\n"
+                            "JUST JOIN IT - STOP\n"
+                            "========================================"
+                        )
+
+                        print(
+                            f"Powód: {error}"
+                        )
+
+                        print(
+                            "Nie wykonujemy kolejnych "
+                            "wyszukiwań Just Join."
+                        )
+
+                        break
+
+                    except Exception as error:
+
+                        justjoin_complete = False
+
+                        print(
+                            "[ERROR] Just Join IT "
+                            f"dla '{keyword}': "
+                            f"{error}"
+                        )
+
+                # ---------------------------------------------
+                # MISSED COUNT
+                # ---------------------------------------------
+
+                if justjoin_complete:
+
+                    mark_missing_jobs(
+                        portal="justjoin",
+                        seen_source_ids=(
+                            justjoin_seen_ids
+                        ),
+                        threshold=(
+                            MISSED_THRESHOLD
+                        ),
+                    )
+
+                else:
+
+                    print(
+                        "[AKTYWNOŚĆ] Just Join: "
+                        "pominięto missed_count "
+                        "z powodu niepełnego skanu."
+                    )
+
+            else:
+
+                print(
+                    "\n[JUST JOIN] "
+                    "WYŁĄCZONE"
+                )
+
+            # =================================================
+            # PRACUJ.PL
+            # =================================================
+
+            if RUN_PRACUJ:
+
+                print(
+                    "\n========================================"
+                )
+
+                print(
+                    "SCRAPOWANIE PRACUJ.PL"
+                )
+
+                print(
+                    "========================================"
+                )
+
+                for index, keyword in enumerate(
+                    keywords
+                ):
+
+                    # -----------------------------------------
+                    # PRZERWA
+                    # -----------------------------------------
 
                     delay = random.uniform(
                         MIN_DELAY,
@@ -317,7 +663,7 @@ def run_scrape():
 
                     print(
                         "\nPrzerwa przed "
-                        "kolejnym wyszukiwaniem: "
+                        "wyszukiwaniem Pracuj.pl: "
                         f"{delay:.1f} s"
                     )
 
@@ -325,230 +671,303 @@ def run_scrape():
                         delay
                     )
 
-                # -----------------------------------------
-                # SCRAPOWANIE
-                # -----------------------------------------
+                    # -----------------------------------------
+                    # SCRAPING
+                    # -----------------------------------------
 
-                try:
+                    try:
 
-                    jobs, page_ok = (
-                        scrape_justjoin_page(
-                            search_page,
-                            keyword,
-                        )
-                    )
-
-                    if not page_ok:
-                        scan_complete = False
-
-                    total_found += len(
-                        jobs
-                    )
-
-                    for job in jobs:
-
-                        # Oferta została znaleziona.
-                        seen_source_ids.add(
-                            job["source_id"]
+                        (
+                            jobs,
+                            seen_ids,
+                            scan_complete,
+                        ) = scrape_pracuj(
+                            page=pracuj_page,
+                            keyword=keyword,
+                            min_delay=MIN_DELAY,
+                            max_delay=MAX_DELAY,
                         )
 
-                        # ---------------------------------
-                        # FILTR IGNOROWANYCH
-                        # ---------------------------------
-
-                        if is_ignored_job(
-                            job["title"],
-                            ignored_keywords,
-                        ):
-
-                            print(
-                                "[IGNORUJ] "
-                                f"{job['title']}"
-                            )
-
-                            total_ignored += 1
-
-                            continue
-
-                        # ---------------------------------
-                        # MYSQL
-                        # ---------------------------------
-
-                        result = save_job(
-                            job
+                        pracuj_seen_ids.update(
+                            seen_ids
                         )
 
-                        total_saved += 1
+                        if not scan_complete:
 
-                        # ---------------------------------
-                        # SZCZEGÓŁY
-                        # ---------------------------------
+                            pracuj_complete = False
 
-                        if (
-                            result["needs_details"]
-                            and len(details_queue)
-                            < MAX_DETAILS_PER_RUN
-                        ):
-
-                            details_queue.append(
-                                job
-                            )
-
-                except PortalBlockedError as error:
-
-                    scan_complete = False
-
-                    print(
-                        "\n"
-                        "========================================\n"
-                        "JUST JOIN IT - STOP\n"
-                        "========================================"
-                    )
-
-                    print(
-                        f"Powód zatrzymania: {error}"
-                    )
-
-                    print(
-                        "Nie wykonujemy kolejnych "
-                        "wyszukiwań Just Join IT."
-                    )
-
-                    break
-
-                except Exception as error:
-
-                    scan_complete = False
-
-                    print(
-                        "[ERROR] Just Join IT "
-                        f"dla '{keyword}': "
-                        f"{error}"
-                    )
-
-            # =============================================
-            # SZCZEGÓŁY OFERT
-            # =============================================
-
-            print(
-                "\n========================================"
-            )
-            print(
-                "POBIERANIE SZCZEGÓŁÓW OFERT"
-            )
-            print(
-                "========================================"
-            )
-
-            print(
-                "Oferty do pobrania szczegółów: "
-                f"{len(details_queue)}"
-            )
-
-            for index, job in enumerate(
-                details_queue
-            ):
-
-                if index > 0:
-
-                    delay = random.uniform(
-                        DETAIL_MIN_DELAY,
-                        DETAIL_MAX_DELAY,
-                    )
-
-                    print(
-                        "\nPrzerwa przed "
-                        "kolejną ofertą szczegółową: "
-                        f"{delay:.1f} s"
-                    )
-
-                    time.sleep(
-                        delay
-                    )
-
-                try:
-
-                    details = (
-                        scrape_justjoin_details(
-                            details_page,
-                            job,
-                        )
-                    )
-
-                    if details is not None:
-
-                        save_job_details(
-                            portal="justjoin",
-                            source_id=job[
-                                "source_id"
-                            ],
-                            details=details,
+                        process_jobs(
+                            jobs=jobs,
+                            ignored_keywords=(
+                                ignored_keywords
+                            ),
+                            details_queue=(
+                                pracuj_details_queue
+                            ),
+                            total_stats=(
+                                total_stats
+                            ),
                         )
 
-                        total_details += 1
+                    except PracujBlockedError as error:
 
-                except PortalBlockedError as error:
+                        pracuj_complete = False
 
-                    scan_complete = False
+                        print(
+                            "\n"
+                            "========================================\n"
+                            "PRACUJ.PL - STOP\n"
+                            "========================================"
+                        )
 
-                    print(
-                        "\n"
-                        "========================================\n"
-                        "JUST JOIN IT - STOP\n"
-                        "========================================"
+                        print(
+                            f"Powód: {error}"
+                        )
+
+                        print(
+                            "Nie wykonujemy kolejnych "
+                            "wyszukiwań Pracuj.pl."
+                        )
+
+                        break
+
+                    except Exception as error:
+
+                        pracuj_complete = False
+
+                        print(
+                            "[ERROR] Pracuj.pl "
+                            f"dla '{keyword}': "
+                            f"{error}"
+                        )
+
+                # ---------------------------------------------
+                # MISSED COUNT
+                # ---------------------------------------------
+
+                if pracuj_complete:
+
+                    mark_missing_jobs(
+                        portal="pracuj",
+                        seen_source_ids=(
+                            pracuj_seen_ids
+                        ),
+                        threshold=(
+                            MISSED_THRESHOLD
+                        ),
                     )
 
-                    print(
-                        f"Powód zatrzymania: {error}"
-                    )
+                else:
 
                     print(
-                        "Nie będą pobierane "
-                        "kolejne strony szczegółowe."
+                        "[AKTYWNOŚĆ] Pracuj.pl: "
+                        "pominięto missed_count "
+                        "z powodu niepełnego skanu."
                     )
-
-                    break
-
-                except Exception as error:
-
-                    scan_complete = False
-
-                    print(
-                        "[ERROR] Szczegóły "
-                        f"{job['url']}: "
-                        f"{error}"
-                    )
-
-            # =============================================
-            # MISSED COUNT
-            # =============================================
-
-            if scan_complete:
-
-                mark_missing_jobs(
-                    portal="justjoin",
-                    seen_source_ids=(
-                        seen_source_ids
-                    ),
-                    threshold=(
-                        MISSED_THRESHOLD
-                    ),
-                )
 
             else:
 
                 print(
-                    "\n[AKTYWNOŚĆ] Pominięto "
-                    "aktualizację missed_count, "
-                    "ponieważ pełny skan "
-                    "Just Join nie zakończył się "
-                    "poprawnie."
+                    "\n[PRACUJ.PL] "
+                    "WYŁĄCZONE"
+                )
+
+            # =================================================
+            # SZCZEGÓŁY JUST JOIN
+            # =================================================
+
+            if RUN_JUSTJOIN:
+
+                print(
+                    "\n========================================"
+                )
+
+                print(
+                    "SZCZEGÓŁY JUST JOIN IT"
+                )
+
+                print(
+                    "========================================"
+                )
+
+                print(
+                    "Ofert do pobrania szczegółów: "
+                    f"{len(justjoin_details_queue)}"
+                )
+
+                for index, job in enumerate(
+                    justjoin_details_queue
+                ):
+
+                    if index > 0:
+
+                        delay = random.uniform(
+                            DETAIL_MIN_DELAY,
+                            DETAIL_MAX_DELAY,
+                        )
+
+                        print(
+                            "\nPrzerwa przed "
+                            "kolejną ofertą szczegółową: "
+                            f"{delay:.1f} s"
+                        )
+
+                        time.sleep(
+                            delay
+                        )
+
+                    try:
+
+                        details = (
+                            scrape_justjoin_details(
+                                justjoin_details_page,
+                                job,
+                            )
+                        )
+
+                        if details is not None:
+
+                            save_job_details(
+                                portal="justjoin",
+                                source_id=job[
+                                    "source_id"
+                                ],
+                                details=details,
+                            )
+
+                    except PortalBlockedError as error:
+
+                        print(
+                            "\n"
+                            "========================================"
+                        )
+
+                        print(
+                            "JUST JOIN - STOP SZCZEGÓŁÓW"
+                        )
+
+                        print(
+                            "========================================"
+                        )
+
+                        print(
+                            f"Powód: {error}"
+                        )
+
+                        break
+
+                    except Exception as error:
+
+                        print(
+                            "[ERROR] Just Join "
+                            f"szczegóły: {error}"
+                        )
+
+            # =================================================
+            # SZCZEGÓŁY PRACUJ
+            # =================================================
+
+            if RUN_PRACUJ:
+
+                print(
+                    "\n========================================"
+                )
+
+                print(
+                    "SZCZEGÓŁY PRACUJ.PL"
+                )
+
+                print(
+                    "========================================"
+                )
+
+                print(
+                    "Ofert do pobrania szczegółów: "
+                    f"{len(pracuj_details_queue)}"
+                )
+
+                for index, job in enumerate(
+                    pracuj_details_queue
+                ):
+
+                    if index > 0:
+
+                        delay = random.uniform(
+                            DETAIL_MIN_DELAY,
+                            DETAIL_MAX_DELAY,
+                        )
+
+                        print(
+                            "\nPrzerwa przed "
+                            "kolejną ofertą szczegółową: "
+                            f"{delay:.1f} s"
+                        )
+
+                        time.sleep(
+                            delay
+                        )
+
+                    try:
+
+                        details = (
+                            scrape_pracuj_details(
+                                pracuj_details_page,
+                                job,
+                            )
+                        )
+
+                        if details is not None:
+
+                            save_job_details(
+                                portal="pracuj",
+                                source_id=job[
+                                    "source_id"
+                                ],
+                                details=details,
+                            )
+
+                    except PracujBlockedError as error:
+
+                        print(
+                            "\n"
+                            "========================================"
+                        )
+
+                        print(
+                            "PRACUJ.PL - STOP SZCZEGÓŁÓW"
+                        )
+
+                        print(
+                            "========================================"
+                        )
+
+                        print(
+                            f"Powód: {error}"
+                        )
+
+                        break
+
+                    except Exception as error:
+
+                        print(
+                            "[ERROR] Pracuj.pl "
+                            f"szczegóły: {error}"
+                        )
+
+            else:
+
+                print(
+                    "\n[PRACUJ.PL] "
+                    "SZCZEGÓŁY WYŁĄCZONE"
                 )
 
         finally:
 
-            search_page.close()
-            details_page.close()
+            justjoin_page.close()
+            pracuj_page.close()
+
+            justjoin_details_page.close()
+            pracuj_details_page.close()
 
             context.close()
             browser.close()
@@ -560,29 +979,28 @@ def run_scrape():
     print(
         "\n========================================"
     )
+
     print(
         "PODSUMOWANIE"
     )
+
     print(
         "========================================"
     )
 
     print(
-        f"Znaleziono: {total_found}"
+        f"Znaleziono: "
+        f"{total_stats['seen']}"
     )
 
     print(
         "Zapisano/zaaktualizowano: "
-        f"{total_saved}"
+        f"{total_stats['saved']}"
     )
 
     print(
-        f"Zignorowano: {total_ignored}"
-    )
-
-    print(
-        f"Pobrano szczegółów: "
-        f"{total_details}"
+        f"Zignorowano: "
+        f"{total_stats['ignored']}"
     )
 
     print(
@@ -609,8 +1027,8 @@ def parse_args():
         "--retry-details",
         action="store_true",
         help=(
-            "Pobierz ponownie szczegóły ofert, "
-            "które nie mają details_scraped_at."
+            "Pobierz ponownie szczegóły "
+            "ofert bez details_scraped_at."
         ),
     )
 
@@ -634,9 +1052,11 @@ def main():
     print(
         "========================================"
     )
+
     print(
         "JOB OFFERS SCRAPER"
     )
+
     print(
         "========================================"
     )
