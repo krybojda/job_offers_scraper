@@ -2,14 +2,21 @@ import re
 from datetime import datetime
 from urllib.parse import quote, urljoin
 
-
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError # type: ignore
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from config import JUSTJOIN_BASE_URL
 from utils import clean_text, generate_source_id
 
+
+# =========================================================
+# BLOKADY / RATE LIMIT
+# =========================================================
+
 class PortalBlockedError(Exception):
-    """Oznacza wykrycie blokady lub rate limitu portalu."""
+    """
+    Oznacza wykrycie blokady lub rate limitu portalu.
+    """
+
 
 BLOCK_STATUS_CODES = {
     403,
@@ -17,6 +24,10 @@ BLOCK_STATUS_CODES = {
     503,
 }
 
+
+# Nie dodajemy tutaj samego "captcha".
+# Samo słowo captcha może występować
+# w normalnej treści oferty.
 BLOCK_TEXT_PATTERNS = [
     "access denied",
     "too many requests",
@@ -25,19 +36,26 @@ BLOCK_TEXT_PATTERNS = [
     "verify you are human",
     "verify that you are human",
     "checking your browser",
-    "captcha",
-    "cf-chl-",
-    "challenge-platform",
+    "attention required! | cloudflare",
+    "unusual traffic",
 ]
+
 
 def detect_portal_block(
     response,
     page,
 ):
+    """
+    Wykrywa rzeczywistą blokadę/rate limit.
 
-    # -------------------------------------------------
+    Zwraca:
+        None - brak blokady
+        str  - powód blokady
+    """
+
+    # -----------------------------------------------------
     # STATUS HTTP
-    # -------------------------------------------------
+    # -----------------------------------------------------
 
     if response is not None:
 
@@ -49,9 +67,9 @@ def detect_portal_block(
                 f"HTTP {status}"
             )
 
-    # -------------------------------------------------
-    # TREŚĆ STRONY
-    # -------------------------------------------------
+    # -----------------------------------------------------
+    # WIDOCZNY TEKST STRONY
+    # -----------------------------------------------------
 
     try:
 
@@ -72,205 +90,27 @@ def detect_portal_block(
         if pattern in body_text:
 
             return (
-                f"wykryto tekst blokady: "
+                "wykryto tekst blokady: "
                 f"{pattern}"
             )
 
     return None
 
-def find_published_date(lines):
-    """
-    Szuka daty publikacji na stronie szczegółowej.
 
-    Przykład:
-        Published: 19.08.2026
-
-    Zwraca obiekt datetime albo None.
-    """
-
-    date_pattern = re.compile(
-        r"(?:published|published\s+on)\s*:\s*"
-        r"(\d{2}\.\d{2}\.\d{4})",
-        re.IGNORECASE,
-    )
-
-    for line in lines:
-
-        match = date_pattern.search(line)
-
-        if not match:
-            continue
-
-        try:
-            return datetime.strptime(
-                match.group(1),
-                "%d.%m.%Y",
-            )
-
-        except ValueError:
-            continue
-
-    return None
-
-
-def find_detail_location(lines, title):
-    """
-    Próbuje znaleźć właściwą lokalizację oferty
-    z sekcji "Summary of the offer".
-
-    Typowy układ Just Join:
-
-    Summary of the offer
-    ...
-    DevOps Engineer
-    -, Warszawa
-    Firma
-    ...
-
-    albo:
-
-    DevOps Engineer
-    centrum, Warszawa
-    Firma
-    """
-
-    summary_index = None
-
-    for index, line in enumerate(lines):
-
-        if line.lower().strip() == "summary of the offer":
-            summary_index = index
-            break
-
-    if summary_index is None:
-        return None
-
-    normalized_title = (
-        title.lower().strip()
-        if title
-        else ""
-    )
-
-    # Szukamy tytułu wewnątrz Summary.
-    for index in range(
-        summary_index + 1,
-        min(
-            summary_index + 30,
-            len(lines),
-        ),
-    ):
-
-        line = lines[index]
-
-        if (
-            normalized_title
-            and line.lower().strip()
-            == normalized_title
-        ):
-
-            # Kolejna sensowna linia powinna
-            # zawierać lokalizację.
-            for next_index in range(
-                index + 1,
-                min(
-                    index + 5,
-                    len(lines),
-                ),
-            ):
-
-                candidate = lines[next_index].strip()
-
-                if not candidate:
-                    continue
-
-                # Pomijamy elementy interfejsu.
-                if candidate.lower() in {
-                    "save",
-                    "apply",
-                    "summary of the offer",
-                }:
-                    continue
-
-                # Jeżeli kolejna linia jest firmą,
-                # będzie trudniej ją odróżnić.
-                # Lokalizacja zwykle zawiera przecinek
-                # albo zaczyna się od "-,".
-                if (
-                    "," in candidate
-                    or candidate.startswith("-,")
-                ):
-
-                    candidate = candidate.strip()
-
-                    # "-, Warszawa" -> "Warszawa"
-                    candidate = re.sub(
-                        r"^-\s*,\s*",
-                        "",
-                        candidate,
-                    )
-
-                    return candidate
-
-                # Jeżeli mamy zwykłą lokalizację,
-                # np. Warszawa.
-                if re.search(
-                    r"""\b(
-                        Warszawa|
-                        Kraków|
-                        Wrocław|
-                        Poznań|
-                        Gdańsk|
-                        Katowice|
-                        Łódź|
-                        Lublin|
-                        Białystok|
-                        Rzeszów|
-                        Bydgoszcz|
-                        Szczecin|
-                        Krakow|
-                        Wroclaw|
-                        Poznan
-                    )\b""",
-                    candidate,
-                    re.IGNORECASE | re.VERBOSE,
-                ):
-                    return candidate
-
-    return None
-
-def clean_lines(value):
-    """
-    Czyści tekst, ale zachowuje podział na linie.
-
-    Jest to ważne przy parsowaniu kart Just Join,
-    ponieważ kolejność linii określa znaczenie danych.
-    """
-
-    if not value:
-        return []
-
-    lines = []
-
-    for line in value.splitlines():
-        line = " ".join(line.split()).strip()
-
-        if line:
-            lines.append(line)
-
-    return lines
+# =========================================================
+# LOKALIZACJA
+# =========================================================
 
 def clean_location(lines):
     """
-    Wyciąga lokalizację z karty wyników Just Join.
+    Wyciąga lokalizację z karty wyników.
     """
 
-    # -----------------------------------------
-    # PRZYPADEK:
-    #
+    # -----------------------------------------------------
     # Warszawa
     # , +4
     # Locations
-    # -----------------------------------------
+    # -----------------------------------------------------
 
     for index in range(
         len(lines)
@@ -306,12 +146,10 @@ def clean_location(lines):
 
             return location
 
-    # -----------------------------------------
-    # PRZYPADEK:
-    #
+    # -----------------------------------------------------
     # Warszawa
     # Locations
-    # -----------------------------------------
+    # -----------------------------------------------------
 
     for index in range(
         len(lines) - 1
@@ -327,13 +165,19 @@ def clean_location(lines):
 
             return lines[index]
 
-    # -----------------------------------------
-    # Nie znaleziono
-    # -----------------------------------------
-
     return None
 
+
+# =========================================================
+# WYNAGRODZENIE
+# =========================================================
+
 def clean_salary(lines):
+    """
+    Szuka zakresu wynagrodzenia
+    lub Undisclosed Salary.
+    """
+
     salary_pattern = re.compile(
         r"""
         \d[\d\s.,]*
@@ -385,7 +229,12 @@ def clean_salary(lines):
     return None
 
 
+# =========================================================
+# TRYB PRACY
+# =========================================================
+
 def find_work_mode(lines):
+
     for line in lines:
 
         normalized = (
@@ -406,8 +255,13 @@ def find_work_mode(lines):
     return None
 
 
+# =========================================================
+# TYP PRACY
+# =========================================================
+
 def find_work_type(lines):
-    work_types = {
+
+    values = {
         "full-time",
         "part-time",
         "practice / internship",
@@ -420,8 +274,14 @@ def find_work_type(lines):
 
     for line in lines:
 
-        if line.lower().strip() in work_types:
-            found.append(line)
+        if (
+            line.lower().strip()
+            in values
+        ):
+
+            found.append(
+                line
+            )
 
     if not found:
         return None
@@ -431,8 +291,13 @@ def find_work_type(lines):
     )
 
 
+# =========================================================
+# POZIOM DOŚWIADCZENIA
+# =========================================================
+
 def find_experience_level(lines):
-    levels = {
+
+    values = {
         "intern",
         "junior",
         "mid",
@@ -446,14 +311,14 @@ def find_experience_level(lines):
 
     for line in lines:
 
-        normalized = (
-            line
-            .lower()
-            .strip()
-        )
+        if (
+            line.lower().strip()
+            in values
+        ):
 
-        if normalized in levels:
-            found.append(line)
+            found.append(
+                line
+            )
 
     if not found:
         return None
@@ -463,27 +328,34 @@ def find_experience_level(lines):
     )
 
 
+# =========================================================
+# RODZAJ UMOWY
+# =========================================================
+
 def find_contract_type(lines):
-    contracts = {
+
+    values = {
         "b2b",
         "permanent",
+        "internship",
         "mandate",
-        "specific-task contract",
         "mandate contract",
+        "specific-task contract",
+        "contract",
     }
 
     found = []
 
     for line in lines:
 
-        normalized = (
-            line
-            .lower()
-            .strip()
-        )
+        if (
+            line.lower().strip()
+            in values
+        ):
 
-        if normalized in contracts:
-            found.append(line)
+            found.append(
+                line
+            )
 
     if not found:
         return None
@@ -492,6 +364,10 @@ def find_contract_type(lines):
         dict.fromkeys(found)
     )
 
+
+# =========================================================
+# TYTUŁ
+# =========================================================
 
 def find_title(
     headings,
@@ -499,6 +375,12 @@ def find_title(
     link_text,
     lines,
 ):
+    """
+    Znajduje tytuł oferty.
+    """
+
+    # H1-H4
+
     for heading in headings:
 
         heading = clean_text(
@@ -507,6 +389,8 @@ def find_title(
 
         if heading:
             return heading
+
+    # title="View offer ..."
 
     link_title = clean_text(
         link_title
@@ -524,6 +408,8 @@ def find_title(
         if cleaned:
             return cleaned
 
+    # Tekst linku.
+
     link_text = clean_text(
         link_text
     )
@@ -531,7 +417,41 @@ def find_title(
     if link_text:
         return link_text
 
+    # Awaryjnie karta.
+
     for line in lines:
+
+        normalized = line.lower()
+
+        if normalized in {
+            "remote",
+            "hybrid",
+            "office",
+            "locations",
+            "location",
+            "new",
+            "super offer",
+            "1-click apply",
+            "full-time",
+            "part-time",
+            "senior",
+            "mid",
+            "junior",
+            "intern",
+        }:
+            continue
+
+        if re.search(
+            r"\d+\s*d\s*left",
+            normalized,
+        ):
+            continue
+
+        if re.search(
+            r"(chf|eur|usd|pln|gbp)",
+            normalized,
+        ):
+            continue
 
         if len(line) > 5:
             return line
@@ -539,8 +459,419 @@ def find_title(
     return None
 
 
-def build_justjoin_url(keyword):
+# =========================================================
+# DATA PUBLIKACJI
+# =========================================================
+
+def find_published_date(lines):
+    """
+    Szuka daty publikacji.
+
+    Przykłady:
+        Published: 19.08.2026
+        Published on: 19.08.2026
+    """
+
+    patterns = [
+        re.compile(
+            r"published\s*:\s*"
+            r"(\d{2}\.\d{2}\.\d{4})",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"published\s+on\s*:\s*"
+            r"(\d{2}\.\d{2}\.\d{4})",
+            re.IGNORECASE,
+        ),
+    ]
+
+    for line in lines:
+
+        for pattern in patterns:
+
+            match = pattern.search(
+                line
+            )
+
+            if not match:
+                continue
+
+            try:
+
+                return datetime.strptime(
+                    match.group(1),
+                    "%d.%m.%Y",
+                )
+
+            except ValueError:
+
+                continue
+
+    # "Published:" oraz data mogą być
+    # osobnymi liniami.
+
+    for index, line in enumerate(
+        lines
+    ):
+
+        if (
+            line.lower().strip()
+            in {
+                "published",
+                "published:",
+                "published on",
+                "published on:",
+            }
+        ):
+
+            if (
+                index + 1 < len(lines)
+            ):
+
+                match = re.fullmatch(
+                    r"\d{2}\.\d{2}\.\d{4}",
+                    lines[index + 1],
+                )
+
+                if match:
+
+                    try:
+
+                        return datetime.strptime(
+                            lines[index + 1],
+                            "%d.%m.%Y",
+                        )
+
+                    except ValueError:
+
+                        pass
+
+    return None
+
+
+# =========================================================
+# LOKALIZACJA ZE STRONY SZCZEGÓŁOWEJ
+# =========================================================
+
+def find_detail_location(
+    lines,
+    title,
+):
+    """
+    Próbuje znaleźć właściwą lokalizację
+    ze strony szczegółowej.
+    """
+
+    normalized_title = (
+        title.lower().strip()
+        if title
+        else ""
+    )
+
+    title_indexes = []
+
+    for index, line in enumerate(
+        lines
+    ):
+
+        if (
+            normalized_title
+            and line.lower().strip()
+            == normalized_title
+        ):
+
+            title_indexes.append(
+                index
+            )
+
+    # Szukamy lokalizacji obok tytułu.
+
+    for title_index in title_indexes:
+
+        start = title_index + 1
+        end = min(
+            title_index + 8,
+            len(lines),
+        )
+
+        nearby = lines[
+            start:end
+        ]
+
+        for candidate in nearby:
+
+            normalized = (
+                candidate
+                .lower()
+                .strip()
+            )
+
+            if not candidate:
+                continue
+
+            if normalized in {
+                "save",
+                "apply",
+                "summary of the offer",
+                "remote",
+                "hybrid",
+                "office",
+                "locations",
+            }:
+                continue
+
+            # "-, Warszawa"
+            candidate_clean = re.sub(
+                r"^-\s*,\s*",
+                "",
+                candidate,
+            ).strip()
+
+            if candidate_clean != candidate:
+
+                if candidate_clean:
+                    return candidate_clean
+
+            # Typowe lokalizacje.
+
+            if re.search(
+                r"\b("
+                r"Warszawa|"
+                r"Kraków|"
+                r"Wrocław|"
+                r"Poznań|"
+                r"Gdańsk|"
+                r"Katowice|"
+                r"Łódź|"
+                r"Lublin|"
+                r"Białystok|"
+                r"Rzeszów|"
+                r"Bydgoszcz|"
+                r"Szczecin|"
+                r"Krakow|"
+                r"Wroclaw|"
+                r"Poznan|"
+                r"Gdansk|"
+                r"Lodz|"
+                r"Zurich|"
+                r"Zürich|"
+                r"Geneva|"
+                r"London|"
+                r"Berlin|"
+                r"Prague"
+                r")\b",
+                candidate,
+                re.IGNORECASE,
+            ):
+
+                return candidate
+
+    # Fallback: Office Location.
+
+    for index, line in enumerate(
+        lines
+    ):
+
+        if (
+            line.lower().strip()
+            == "office location"
+        ):
+
+            if (
+                index + 1 < len(lines)
+            ):
+
+                candidate = lines[
+                    index + 1
+                ]
+
+                if candidate:
+                    return candidate
+
+    return None
+
+
+# =========================================================
+# SEKCJE OFERTY
+# =========================================================
+
+def _extract_section(
+    lines,
+    start_titles,
+    end_titles,
+):
+    """
+    Wyciąga tekst pomiędzy nagłówkami sekcji.
+    """
+
+    start_index = None
+
+    start_titles = {
+        item.lower()
+        for item in start_titles
+    }
+
+    end_titles = {
+        item.lower()
+        for item in end_titles
+    }
+
+    for index, line in enumerate(
+        lines
+    ):
+
+        normalized = (
+            line.lower().strip()
+        )
+
+        if normalized in start_titles:
+
+            start_index = index + 1
+            break
+
+    if start_index is None:
+        return None
+
+    end_index = len(lines)
+
+    for index in range(
+        start_index,
+        len(lines),
+    ):
+
+        normalized = (
+            lines[index]
+            .lower()
+            .strip()
+        )
+
+        if normalized in end_titles:
+
+            end_index = index
+            break
+
+    section = lines[
+        start_index:end_index
+    ]
+
+    if not section:
+        return None
+
+    return "\n".join(
+        section
+    ).strip()
+
+
+# =========================================================
+# WYGAŚNIĘCIE OFERTY
+# =========================================================
+
+def parse_expiration(lines):
+    """
+    Zwraca:
+        expires_text
+        expires_at
+    """
+
+    for line in lines:
+
+        normalized = line.lower()
+
+        # Oferta wygasła.
+
+        if (
+            "offer expired"
+            in normalized
+        ):
+
+            return (
+                line,
+                None,
+            )
+
+        # Data końcowa.
+
+        date_match = re.search(
+            r"(\d{2}\.\d{2}\.\d{4})",
+            line,
+        )
+
+        if (
+            date_match
+            and re.search(
+                r"(until|expires|expiration)",
+                line,
+                re.IGNORECASE,
+            )
+        ):
+
+            try:
+
+                expires_at = datetime.strptime(
+                    date_match.group(1),
+                    "%d.%m.%Y",
+                )
+
+                return (
+                    line,
+                    expires_at,
+                )
+
+            except ValueError:
+                pass
+
+        # 29d left.
+
+        if re.search(
+            r"\b\d+\s*day[s]?\s*left\b",
+            normalized,
+        ):
+
+            return (
+                line,
+                None,
+            )
+
+        if (
+            "expires today"
+            in normalized
+        ):
+
+            return (
+                line,
+                None,
+            )
+
+        if (
+            "expires tomorrow"
+            in normalized
+        ):
+
+            return (
+                line,
+                None,
+            )
+
+    return (
+        None,
+        None,
+    )
+
+
+# =========================================================
+# URL
+# =========================================================
+
+def build_justjoin_url(
+    keyword,
+):
+    """
+    Buduje URL wyszukiwania Just Join IT.
+    """
+
     normalized = keyword.strip()
+
+    # Pojedyncze słowo.
 
     if " " not in normalized:
 
@@ -554,6 +885,8 @@ def build_justjoin_url(keyword):
             f"{slug}"
         )
 
+    # Fraza.
+
     encoded = quote(
         normalized
     )
@@ -565,15 +898,22 @@ def build_justjoin_url(keyword):
     )
 
 
-def extract_job_from_raw_item(item, keyword):
-    """
-    Zamienia surowy rekord z DOM na wspólny format oferty.
+# =========================================================
+# PARSOWANIE OFERTY Z LISTY
+# =========================================================
 
-    Zachowujemy strukturę linii karty, ponieważ Just Join
-    prezentuje dane w ustalonej kolejności.
+def extract_job_from_raw_item(
+    item,
+    keyword,
+):
+    """
+    Zamienia rekord DOM na wspólny format oferty.
     """
 
-    href = item.get("href", "").strip()
+    href = item.get(
+        "href",
+        "",
+    ).strip()
 
     if not href:
         return None
@@ -586,275 +926,102 @@ def extract_job_from_raw_item(item, keyword):
         href,
     )
 
-    source_id = generate_source_id(url)
-
-    # -------------------------------------------------
-    # WAŻNE:
-    # tutaj NIE używamy clean_text() przed splitlines()
-    # -------------------------------------------------
-
-    lines = clean_lines(
-        item.get("cardText")
+    source_id = generate_source_id(
+        url
     )
+
+    # -----------------------------------------------------
+    # ZACHOWAJ LINIE
+    # -----------------------------------------------------
+
+    raw_card_text = item.get(
+        "cardText",
+        "",
+    )
+
+    lines = []
+
+    for line in raw_card_text.splitlines():
+
+        line = clean_text(
+            line
+        )
+
+        if line:
+            lines.append(
+                line
+            )
 
     if not lines:
         return None
 
-    # -------------------------------------------------
+    # -----------------------------------------------------
     # TYTUŁ
-    # -------------------------------------------------
+    # -----------------------------------------------------
 
-    headings = item.get("headings") or []
+    headings = (
+        item.get("headings")
+        or []
+    )
 
-    title = None
-
-    for heading in headings:
-        heading = clean_text(heading)
-
-        if heading:
-            title = heading
-            break
-
-    if not title:
-
-        link_title = clean_text(
-            item.get("linkTitle")
-        )
-
-        if link_title:
-
-            title = re.sub(
-                r"^\s*view\s+offer\s*",
-                "",
-                link_title,
-                flags=re.IGNORECASE,
-            )
-
-    if not title:
-
-        link_text = clean_text(
-            item.get("linkText")
-        )
-
-        if link_text:
-            title = link_text
+    title = find_title(
+        headings,
+        item.get("linkTitle"),
+        item.get("linkText"),
+        lines,
+    )
 
     if not title:
         return None
 
-    # -------------------------------------------------
+    # -----------------------------------------------------
     # FIRMA
-    # -------------------------------------------------
+    # -----------------------------------------------------
 
-    # W aktualnej karcie Just Join firma znajduje się
-    # jako pierwszy sensowny element tekstowy.
-    company = lines[0]
+    company = None
 
-    if company == title:
-        company = None
+    if lines:
 
-    # -------------------------------------------------
-    # LOKALIZACJA
-    # -------------------------------------------------
-
-    location = None
-
-    for index, line in enumerate(lines):
-
-        # Warszawa
-        # , +4
-        # Locations
+        candidate = lines[0]
 
         if (
-            index + 1 < len(lines)
-            and lines[index + 1].startswith(",")
+            candidate
+            and candidate != title
         ):
 
-            location = (
-                f"{line}{lines[index + 1]}"
-            )
+            company = candidate
 
-            if (
-                index + 2 < len(lines)
-                and lines[index + 2].lower()
-                in {
-                    "location",
-                    "locations",
-                }
-            ):
+    # -----------------------------------------------------
+    # DANE Z LISTY
+    # -----------------------------------------------------
 
-                location += (
-                    f" {lines[index + 2]}"
-                )
-
-            break
-
-        # Warszawa
-        # Locations
-
-        if (
-            index + 1 < len(lines)
-            and lines[index + 1].lower()
-            in {
-                "location",
-                "locations",
-            }
-        ):
-
-            location = line
-
-            break
-
-    # -------------------------------------------------
-    # TRYB PRACY
-    # -------------------------------------------------
-
-    work_mode = None
-
-    for line in lines:
-
-        normalized = line.lower()
-
-        if normalized == "remote":
-            work_mode = "Remote"
-            break
-
-        if normalized == "hybrid":
-            work_mode = "Hybrid"
-            break
-
-        if normalized == "office":
-            work_mode = "Office"
-            break
-
-    # -------------------------------------------------
-    # WYNAGRODZENIE
-    # -------------------------------------------------
-
-    salary = None
-
-    salary_range = re.compile(
-        r"""
-        \d[\d\s.,]*
-        \s*-\s*
-        \d[\d\s.,]*
-        """,
-        re.VERBOSE,
+    location = clean_location(
+        lines
     )
 
-    for index, line in enumerate(lines):
+    work_mode = find_work_mode(
+        lines
+    )
 
-        if salary_range.search(line):
+    work_type = find_work_type(
+        lines
+    )
 
-            salary = line
+    experience_level = (
+        find_experience_level(
+            lines
+        )
+    )
 
-            if index + 1 < len(lines):
+    contract_type = (
+        find_contract_type(
+            lines
+        )
+    )
 
-                next_line = lines[index + 1]
-
-                if re.search(
-                    r"(usd|eur|pln|gbp|chf|"
-                    r"/month|/h|month)",
-                    next_line,
-                    re.IGNORECASE,
-                ):
-
-                    salary = (
-                        f"{salary} "
-                        f"{next_line}"
-                    )
-
-            break
-
-        if re.search(
-            r"undisclosed\s+salary",
-            line,
-            re.IGNORECASE,
-        ):
-
-            salary = line
-            break
-
-    # -------------------------------------------------
-    # WORK TYPE
-    # -------------------------------------------------
-
-    work_type_values = {
-        "full-time",
-        "part-time",
-        "practice / internship",
-        "freelance",
-        "b2b contract",
-    }
-
-    work_type_found = []
-
-    for line in lines:
-
-        normalized = line.lower()
-
-        if normalized in work_type_values:
-            work_type_found.append(line)
-
-    work_type = ", ".join(
-        dict.fromkeys(work_type_found)
-    ) or None
-
-    # -------------------------------------------------
-    # EXPERIENCE
-    # -------------------------------------------------
-
-    experience_values = {
-        "intern",
-        "junior",
-        "mid",
-        "senior",
-        "team leader",
-        "manager",
-        "c-level",
-    }
-
-    experience_found = []
-
-    for line in lines:
-
-        normalized = line.lower()
-
-        if normalized in experience_values:
-            experience_found.append(line)
-
-    experience_level = ", ".join(
-        dict.fromkeys(experience_found)
-    ) or None
-
-    # -------------------------------------------------
-    # CONTRACT TYPE
-    # -------------------------------------------------
-
-    contract_values = {
-        "b2b",
-        "permanent",
-        "internship",
-        "mandate contract",
-        "specific-task contract",
-    }
-
-    contract_found = []
-
-    for line in lines:
-
-        normalized = line.lower()
-
-        if normalized in contract_values:
-            contract_found.append(line)
-
-    contract_type = ", ".join(
-        dict.fromkeys(contract_found)
-    ) or None
-
-    # -------------------------------------------------
-    # ZWRÓĆ REKORD
-    # -------------------------------------------------
+    salary = clean_salary(
+        lines
+    )
 
     return {
         "portal": "justjoin",
@@ -864,13 +1031,16 @@ def extract_job_from_raw_item(item, keyword):
         "location": location,
         "work_mode": work_mode,
         "work_type": work_type,
-        "experience_level": experience_level,
-        "contract_type": contract_type,
         "salary": salary,
         "url": url,
         "keyword": keyword,
         "published_at": None,
     }
+
+
+# =========================================================
+# SCRAPOWANIE LISTY
+# =========================================================
 
 def scrape_justjoin_page(
     page,
@@ -880,11 +1050,8 @@ def scrape_justjoin_page(
     Pobiera jedną stronę wyników Just Join IT.
 
     Zwraca:
-        (jobs, True)  - poprawnie wykonany skan
-        ([], False)   - błąd/timeout bez blokady
-
-    W przypadku wykrycia blokady:
-        rzuca PortalBlockedError
+        (jobs, True)  - poprawny skan
+        ([], False)   - błąd/timeout
     """
 
     url = build_justjoin_url(
@@ -899,9 +1066,9 @@ def scrape_justjoin_page(
         f"URL: {url}"
     )
 
-    # -----------------------------------------
+    # -----------------------------------------------------
     # OTWARCIE STRONY
-    # -----------------------------------------
+    # -----------------------------------------------------
 
     try:
 
@@ -911,7 +1078,6 @@ def scrape_justjoin_page(
             timeout=60000,
         )
 
-        # Czekamy na wyrenderowanie JavaScript.
         page.wait_for_timeout(
             7000
         )
@@ -923,38 +1089,14 @@ def scrape_justjoin_page(
             f"ładowania: {url}"
         )
 
-        # Przy timeout również sprawdzamy,
-        # czy przypadkiem nie pojawiła się
-        # strona blokady.
-
-        block_reason = detect_portal_block(
-            None,
-            page,
+        block_reason = (
+            detect_portal_block(
+                None,
+                page,
+            )
         )
 
         if block_reason:
-
-            print(
-                "\n"
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
-                "!!! BLOKADA JUST JOIN IT !!!\n"
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-            )
-
-            print(
-                f"Powód: {block_reason}"
-            )
-
-            print(
-                "Scrapowanie Just Join IT "
-                "zostało zatrzymane."
-            )
-
-            print(
-                "Nie będą wykonywane kolejne "
-                "żądania do tego portalu "
-                "w tym przebiegu."
-            )
 
             raise PortalBlockedError(
                 block_reason
@@ -962,9 +1104,9 @@ def scrape_justjoin_page(
 
         return [], False
 
-    # -----------------------------------------
-    # SPRAWDZENIE BLOKADY
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # SPRAWDŹ BLOKADĘ
+    # -----------------------------------------------------
 
     block_reason = detect_portal_block(
         response,
@@ -989,12 +1131,6 @@ def scrape_justjoin_page(
             "zostało zatrzymane."
         )
 
-        print(
-            "Nie będą wykonywane kolejne "
-            "żądania do tego portalu "
-            "w tym przebiegu."
-        )
-
         raise PortalBlockedError(
             block_reason
         )
@@ -1003,9 +1139,9 @@ def scrape_justjoin_page(
         f"Załadowany URL: {page.url}"
     )
 
-    # -----------------------------------------
-    # CZEKAJ NA LINKI DO OFERT
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # CZEKAJ NA OFERTY
+    # -----------------------------------------------------
 
     try:
 
@@ -1017,37 +1153,14 @@ def scrape_justjoin_page(
 
     except PlaywrightTimeoutError:
 
-        # Strona może być blokadą mimo HTTP 200,
-        # dlatego sprawdzamy ją ponownie.
-
-        block_reason = detect_portal_block(
-            response,
-            page,
+        block_reason = (
+            detect_portal_block(
+                response,
+                page,
+            )
         )
 
         if block_reason:
-
-            print(
-                "\n"
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
-                "!!! BLOKADA JUST JOIN IT !!!\n"
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-            )
-
-            print(
-                f"Powód: {block_reason}"
-            )
-
-            print(
-                "Scrapowanie Just Join IT "
-                "zostało zatrzymane."
-            )
-
-            print(
-                "Nie będą wykonywane kolejne "
-                "żądania do tego portalu "
-                "w tym przebiegu."
-            )
 
             raise PortalBlockedError(
                 block_reason
@@ -1060,9 +1173,9 @@ def scrape_justjoin_page(
 
         return [], False
 
-    # -----------------------------------------
-    # POBRANIE DANYCH Z DOM
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # POBIERZ DOM
+    # -----------------------------------------------------
 
     raw_jobs = page.evaluate(
         """
@@ -1109,6 +1222,7 @@ def scrape_justjoin_page(
                         .filter(Boolean);
 
                     return {
+
                         href:
                             href || "",
 
@@ -1144,37 +1258,20 @@ def scrape_justjoin_page(
         f"{len(raw_jobs)}"
     )
 
-    # -----------------------------------------
+    # -----------------------------------------------------
     # BRAK OFERT
-    # -----------------------------------------
+    # -----------------------------------------------------
 
     if not raw_jobs:
 
-        # Jeżeli nie ma ofert, jeszcze raz
-        # sprawdzamy ewentualną blokadę.
-
-        block_reason = detect_portal_block(
-            response,
-            page,
+        block_reason = (
+            detect_portal_block(
+                response,
+                page,
+            )
         )
 
         if block_reason:
-
-            print(
-                "\n"
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
-                "!!! BLOKADA JUST JOIN IT !!!\n"
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-            )
-
-            print(
-                f"Powód: {block_reason}"
-            )
-
-            print(
-                "Scrapowanie Just Join IT "
-                "zostało zatrzymane."
-            )
 
             raise PortalBlockedError(
                 block_reason
@@ -1187,9 +1284,9 @@ def scrape_justjoin_page(
 
         return [], False
 
-    # -----------------------------------------
-    # NORMALIZACJA I DEDUPLIKACJA
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # NORMALIZACJA / DEDUPLIKACJA
+    # -----------------------------------------------------
 
     jobs = []
 
@@ -1199,16 +1296,18 @@ def scrape_justjoin_page(
 
         try:
 
-            job = extract_job_from_raw_item(
-                item,
-                keyword,
+            job = (
+                extract_job_from_raw_item(
+                    item,
+                    keyword,
+                )
             )
 
         except Exception as error:
 
             print(
                 "[WARN] Błąd podczas "
-                "przetwarzania: "
+                "przetwarzania oferty: "
                 f"{error}"
             )
 
@@ -1233,158 +1332,28 @@ def scrape_justjoin_page(
         f"przetworzenia: {len(jobs)}"
     )
 
-    # -----------------------------------------
-    # OSTATECZNA KONTROLA
-    # -----------------------------------------
-
     if not jobs:
 
         print(
-            "[WARN] Strona zawierała "
-            f"{len(raw_jobs)} linków, "
-            "ale nie udało się "
+            "[WARN] Nie udało się "
             "przetworzyć żadnej oferty."
         )
 
-        # Nie traktujemy tego automatycznie
-        # jako blokady.
         return [], False
-
-    # -----------------------------------------
-    # POPRAWNY SKAN
-    # -----------------------------------------
 
     return jobs, True
 
 
-def _extract_section(
-    lines,
-    start_titles,
-    end_titles,
-):
-    start_index = None
-
-    for index, line in enumerate(lines):
-
-        normalized = line.lower().strip()
-
-        if normalized in start_titles:
-
-            start_index = index + 1
-            break
-
-    if start_index is None:
-        return None
-
-    end_index = len(lines)
-
-    for index in range(
-        start_index,
-        len(lines),
-    ):
-
-        normalized = (
-            lines[index]
-            .lower()
-            .strip()
-        )
-
-        if normalized in end_titles:
-
-            end_index = index
-            break
-
-    section = lines[
-        start_index:end_index
-    ]
-
-    if not section:
-        return None
-
-    return "\n".join(section).strip()
-
-
-def parse_expiration(lines):
-    """
-    Wyciąga tekst wygaśnięcia i, jeżeli portal
-    pokazuje dokładną datę, zamienia ją na DATETIME.
-    """
-
-    for line in lines:
-
-        normalized = line.lower()
-
-        if (
-            "offer expired"
-            in normalized
-        ):
-
-            return (
-                "Offer expired",
-                None,
-            )
-
-        if re.search(
-            r"until\s+\d{2}\.\d{2}\.\d{4}",
-            line,
-            re.IGNORECASE,
-        ):
-
-            match = re.search(
-                r"(\d{2}\.\d{2}\.\d{4})",
-                line,
-            )
-
-            if match:
-
-                try:
-
-                    date_value = datetime.strptime(
-                        match.group(1),
-                        "%d.%m.%Y",
-                    )
-
-                    return (
-                        line,
-                        date_value,
-                    )
-
-                except ValueError:
-                    pass
-
-        if re.search(
-            r"\b\d+\s*day[s]?\s*left\b",
-            normalized,
-        ):
-
-            return (
-                line,
-                None,
-            )
-
-        if "expires tomorrow" in normalized:
-
-            return (
-                line,
-                None,
-            )
-
-        if "expires today" in normalized:
-
-            return (
-                line,
-                None,
-            )
-
-    return None, None
-
+# =========================================================
+# SZCZEGÓŁY OFERTY
+# =========================================================
 
 def scrape_justjoin_details(
     page,
     job,
 ):
     """
-    Otwiera stronę szczegółową jednej oferty
+    Otwiera stronę szczegółową oferty
     i pobiera dodatkowe informacje.
     """
 
@@ -1394,9 +1363,13 @@ def scrape_justjoin_details(
         f"[SZCZEGÓŁY] {job['title']}"
     )
 
+    # -----------------------------------------------------
+    # OTWARCIE
+    # -----------------------------------------------------
+
     try:
 
-        page.goto(
+        response = page.goto(
             url,
             wait_until="domcontentloaded",
             timeout=60000,
@@ -1413,19 +1386,88 @@ def scrape_justjoin_details(
             f"szczegółowej: {url}"
         )
 
+        block_reason = (
+            detect_portal_block(
+                None,
+                page,
+            )
+        )
+
+        if block_reason:
+
+            raise PortalBlockedError(
+                block_reason
+            )
+
         return None
 
-    body_text = page.locator(
-        "body"
-    ).inner_text(
-        timeout=10000
+    # -----------------------------------------------------
+    # SPRAWDŹ BLOKADĘ
+    # -----------------------------------------------------
+
+    block_reason = detect_portal_block(
+        response,
+        page,
     )
 
-    lines = [
-        clean_text(line)
-        for line in body_text.split("\n")
-        if clean_text(line)
-    ]
+    if block_reason:
+
+        print(
+            "\n"
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+            "!!! BLOKADA JUST JOIN IT !!!\n"
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        )
+
+        print(
+            f"Powód: {block_reason}"
+        )
+
+        raise PortalBlockedError(
+            block_reason
+        )
+
+    # -----------------------------------------------------
+    # TEKST STRONY
+    # -----------------------------------------------------
+
+    try:
+
+        body_text = page.locator(
+            "body"
+        ).inner_text(
+            timeout=10000
+        )
+
+    except Exception as error:
+
+        print(
+            "[WARN] Nie udało się "
+            "odczytać strony szczegółowej: "
+            f"{error}"
+        )
+
+        return None
+
+    lines = []
+
+    for line in body_text.splitlines():
+
+        line = clean_text(
+            line
+        )
+
+        if line:
+            lines.append(
+                line
+            )
+
+    if not lines:
+        return None
+
+    # -----------------------------------------------------
+    # TYTUŁ
+    # -----------------------------------------------------
 
     title = None
 
@@ -1442,20 +1484,33 @@ def scrape_justjoin_details(
     except Exception:
         pass
 
+    if not title:
+        title = job["title"]
 
+    # -----------------------------------------------------
+    # PUBLIKACJA
+    # -----------------------------------------------------
 
-    # -----------------------------------------
+    published_at = (
+        find_published_date(
+            lines
+        )
+    )
+
+    # -----------------------------------------------------
+    # LOKALIZACJA
+    # -----------------------------------------------------
+
+    location = (
+        find_detail_location(
+            lines,
+            title,
+        )
+    )
+
+    # -----------------------------------------------------
     # PODSTAWOWE INFORMACJE
-    # -----------------------------------------
-
-    published_at = find_published_date(
-        lines
-    )
-
-    location = find_detail_location(
-        lines,
-        job["title"]
-    )
+    # -----------------------------------------------------
 
     work_mode = find_work_mode(
         lines
@@ -1480,10 +1535,10 @@ def scrape_justjoin_details(
     salary = clean_salary(
         lines
     )
-    
-    # -----------------------------------------
-    # SEKCJE
-    # -----------------------------------------
+
+    # -----------------------------------------------------
+    # OPIS
+    # -----------------------------------------------------
 
     job_description = _extract_section(
         lines,
@@ -1498,6 +1553,10 @@ def scrape_justjoin_details(
         },
     )
 
+    # -----------------------------------------------------
+    # TECH STACK
+    # -----------------------------------------------------
+
     tech_stack = _extract_section(
         lines,
         {
@@ -1510,6 +1569,10 @@ def scrape_justjoin_details(
         },
     )
 
+    # -----------------------------------------------------
+    # LOKALIZACJA BIURA
+    # -----------------------------------------------------
+
     office_location = _extract_section(
         lines,
         {
@@ -1521,6 +1584,10 @@ def scrape_justjoin_details(
         },
     )
 
+    # -----------------------------------------------------
+    # INFORMACJE O FIRMIE
+    # -----------------------------------------------------
+
     about_company = _extract_section(
         lines,
         {
@@ -1531,28 +1598,69 @@ def scrape_justjoin_details(
         },
     )
 
-    # -----------------------------------------
+    # -----------------------------------------------------
     # WYGAŚNIĘCIE
-    # -----------------------------------------
+    # -----------------------------------------------------
 
     expires_text, expires_at = (
-        parse_expiration(lines)
+        parse_expiration(
+            lines
+        )
     )
+
+    # -----------------------------------------------------
+    # WYNIK
+    # -----------------------------------------------------
 
     return {
         "title": title,
+
         "company": job["company"],
-        "location": location or job["location"],
-        "work_mode": work_mode or job["work_mode"],
-        "work_type": work_type or job["work_type"],
-        "experience_level": experience_level,
-        "contract_type": contract_type,
-        "salary": salary or job["salary"],
-        "published_at": published_at,
-        "job_description": job_description,
-        "tech_stack": tech_stack,
-        "office_location": office_location,
-        "about_company": about_company,
-        "expires_text": expires_text,
-        "expires_at": expires_at,
+
+        "location": (
+            location
+            or job["location"]
+        ),
+
+        "work_mode": (
+            work_mode
+            or job["work_mode"]
+        ),
+
+        "work_type": (
+            work_type
+            or job["work_type"]
+        ),
+
+        "experience_level":
+            experience_level,
+
+        "contract_type":
+            contract_type,
+
+        "salary": (
+            salary
+            or job["salary"]
+        ),
+
+        "published_at":
+            published_at,
+
+        "job_description":
+            job_description,
+
+        "tech_stack":
+            tech_stack,
+
+        "office_location":
+            office_location,
+
+        "about_company":
+            about_company,
+
+        "expires_text":
+            expires_text,
+
+        "expires_at":
+            expires_at,
     }

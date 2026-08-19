@@ -389,3 +389,51 @@ def mark_missing_jobs(
     finally:
 
         connection.close()
+
+
+def get_jobs_without_details(
+    portal,
+    limit=20,
+):
+    """
+    Pobiera oferty, które nie mają jeszcze
+    pobranych szczegółów.
+    """
+
+    connection = get_db_connection()
+
+    try:
+        cursor = connection.cursor(
+            dictionary=True
+        )
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                portal,
+                source_id,
+                title,
+                company,
+                location,
+                work_mode,
+                work_type,
+                salary,
+                url,
+                keyword
+            FROM jobs
+            WHERE portal = %s
+              AND details_scraped_at IS NULL
+            ORDER BY id ASC
+            LIMIT %s
+            """,
+            (
+                portal,
+                limit,
+            ),
+        )
+
+        return cursor.fetchall()
+
+    finally:
+        connection.close()
