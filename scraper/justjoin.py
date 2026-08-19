@@ -8,6 +8,75 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError # type: i
 from config import JUSTJOIN_BASE_URL
 from utils import clean_text, generate_source_id
 
+class PortalBlockedError(Exception):
+    """Oznacza wykrycie blokady lub rate limitu portalu."""
+
+BLOCK_STATUS_CODES = {
+    403,
+    429,
+    503,
+}
+
+BLOCK_TEXT_PATTERNS = [
+    "access denied",
+    "too many requests",
+    "request blocked",
+    "request has been blocked",
+    "verify you are human",
+    "verify that you are human",
+    "checking your browser",
+    "captcha",
+    "cf-chl-",
+    "challenge-platform",
+]
+
+def detect_portal_block(
+    response,
+    page,
+):
+
+    # -------------------------------------------------
+    # STATUS HTTP
+    # -------------------------------------------------
+
+    if response is not None:
+
+        status = response.status
+
+        if status in BLOCK_STATUS_CODES:
+
+            return (
+                f"HTTP {status}"
+            )
+
+    # -------------------------------------------------
+    # TREŚĆ STRONY
+    # -------------------------------------------------
+
+    try:
+
+        body_text = page.locator(
+            "body"
+        ).inner_text(
+            timeout=5000
+        )
+
+        body_text = body_text.lower()
+
+    except Exception:
+
+        return None
+
+    for pattern in BLOCK_TEXT_PATTERNS:
+
+        if pattern in body_text:
+
+            return (
+                f"wykryto tekst blokady: "
+                f"{pattern}"
+            )
+
+    return None
 
 def find_published_date(lines):
     """
@@ -807,6 +876,17 @@ def scrape_justjoin_page(
     page,
     keyword,
 ):
+    """
+    Pobiera jedną stronę wyników Just Join IT.
+
+    Zwraca:
+        (jobs, True)  - poprawnie wykonany skan
+        ([], False)   - błąd/timeout bez blokady
+
+    W przypadku wykrycia blokady:
+        rzuca PortalBlockedError
+    """
+
     url = build_justjoin_url(
         keyword
     )
@@ -819,14 +899,19 @@ def scrape_justjoin_page(
         f"URL: {url}"
     )
 
+    # -----------------------------------------
+    # OTWARCIE STRONY
+    # -----------------------------------------
+
     try:
 
-        page.goto(
+        response = page.goto(
             url,
             wait_until="domcontentloaded",
             timeout=60000,
         )
 
+        # Czekamy na wyrenderowanie JavaScript.
         page.wait_for_timeout(
             7000
         )
@@ -838,11 +923,89 @@ def scrape_justjoin_page(
             f"ładowania: {url}"
         )
 
+        # Przy timeout również sprawdzamy,
+        # czy przypadkiem nie pojawiła się
+        # strona blokady.
+
+        block_reason = detect_portal_block(
+            None,
+            page,
+        )
+
+        if block_reason:
+
+            print(
+                "\n"
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+                "!!! BLOKADA JUST JOIN IT !!!\n"
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            )
+
+            print(
+                f"Powód: {block_reason}"
+            )
+
+            print(
+                "Scrapowanie Just Join IT "
+                "zostało zatrzymane."
+            )
+
+            print(
+                "Nie będą wykonywane kolejne "
+                "żądania do tego portalu "
+                "w tym przebiegu."
+            )
+
+            raise PortalBlockedError(
+                block_reason
+            )
+
         return [], False
+
+    # -----------------------------------------
+    # SPRAWDZENIE BLOKADY
+    # -----------------------------------------
+
+    block_reason = detect_portal_block(
+        response,
+        page,
+    )
+
+    if block_reason:
+
+        print(
+            "\n"
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+            "!!! BLOKADA JUST JOIN IT !!!\n"
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        )
+
+        print(
+            f"Powód: {block_reason}"
+        )
+
+        print(
+            "Scrapowanie Just Join IT "
+            "zostało zatrzymane."
+        )
+
+        print(
+            "Nie będą wykonywane kolejne "
+            "żądania do tego portalu "
+            "w tym przebiegu."
+        )
+
+        raise PortalBlockedError(
+            block_reason
+        )
 
     print(
         f"Załadowany URL: {page.url}"
     )
+
+    # -----------------------------------------
+    # CZEKAJ NA LINKI DO OFERT
+    # -----------------------------------------
 
     try:
 
@@ -854,12 +1017,52 @@ def scrape_justjoin_page(
 
     except PlaywrightTimeoutError:
 
+        # Strona może być blokadą mimo HTTP 200,
+        # dlatego sprawdzamy ją ponownie.
+
+        block_reason = detect_portal_block(
+            response,
+            page,
+        )
+
+        if block_reason:
+
+            print(
+                "\n"
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+                "!!! BLOKADA JUST JOIN IT !!!\n"
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            )
+
+            print(
+                f"Powód: {block_reason}"
+            )
+
+            print(
+                "Scrapowanie Just Join IT "
+                "zostało zatrzymane."
+            )
+
+            print(
+                "Nie będą wykonywane kolejne "
+                "żądania do tego portalu "
+                "w tym przebiegu."
+            )
+
+            raise PortalBlockedError(
+                block_reason
+            )
+
         print(
             "Nie znaleziono linków "
             "do ofert na stronie."
         )
 
         return [], False
+
+    # -----------------------------------------
+    # POBRANIE DANYCH Z DOM
+    # -----------------------------------------
 
     raw_jobs = page.evaluate(
         """
@@ -941,7 +1144,55 @@ def scrape_justjoin_page(
         f"{len(raw_jobs)}"
     )
 
+    # -----------------------------------------
+    # BRAK OFERT
+    # -----------------------------------------
+
+    if not raw_jobs:
+
+        # Jeżeli nie ma ofert, jeszcze raz
+        # sprawdzamy ewentualną blokadę.
+
+        block_reason = detect_portal_block(
+            response,
+            page,
+        )
+
+        if block_reason:
+
+            print(
+                "\n"
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+                "!!! BLOKADA JUST JOIN IT !!!\n"
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            )
+
+            print(
+                f"Powód: {block_reason}"
+            )
+
+            print(
+                "Scrapowanie Just Join IT "
+                "zostało zatrzymane."
+            )
+
+            raise PortalBlockedError(
+                block_reason
+            )
+
+        print(
+            "Strona została załadowana, "
+            "ale nie znaleziono ofert."
+        )
+
+        return [], False
+
+    # -----------------------------------------
+    # NORMALIZACJA I DEDUPLIKACJA
+    # -----------------------------------------
+
     jobs = []
+
     seen = set()
 
     for item in raw_jobs:
@@ -957,7 +1208,8 @@ def scrape_justjoin_page(
 
             print(
                 "[WARN] Błąd podczas "
-                f"przetwarzania: {error}"
+                "przetwarzania: "
+                f"{error}"
             )
 
             continue
@@ -981,8 +1233,27 @@ def scrape_justjoin_page(
         f"przetworzenia: {len(jobs)}"
     )
 
-    # `True` oznacza, że strona została
-    # poprawnie zescrapowana.
+    # -----------------------------------------
+    # OSTATECZNA KONTROLA
+    # -----------------------------------------
+
+    if not jobs:
+
+        print(
+            "[WARN] Strona zawierała "
+            f"{len(raw_jobs)} linków, "
+            "ale nie udało się "
+            "przetworzyć żadnej oferty."
+        )
+
+        # Nie traktujemy tego automatycznie
+        # jako blokady.
+        return [], False
+
+    # -----------------------------------------
+    # POPRAWNY SKAN
+    # -----------------------------------------
+
     return jobs, True
 
 

@@ -30,7 +30,7 @@ from filters import (
 )
 
 from justjoin import (
-    scrape_justjoin_details,
+    PortalBlockedError,
     scrape_justjoin_page,
 )
 
@@ -159,9 +159,6 @@ def run_scrape():
 
                     for job in jobs:
 
-                        # Nawet jeżeli oferta jest
-                        # ignorowana, została znaleziona
-                        # na portalu.
                         seen_source_ids.add(
                             job["source_id"]
                         )
@@ -186,10 +183,6 @@ def run_scrape():
 
                         total_saved += 1
 
-                        # -----------------------------------------
-                        # Szczegóły tylko wtedy, gdy potrzebne.
-                        # -----------------------------------------
-
                         if (
                             result["needs_details"]
                             and len(details_queue)
@@ -199,6 +192,28 @@ def run_scrape():
                             details_queue.append(
                                 job
                             )
+
+                except PortalBlockedError as error:
+
+                    scan_complete = False
+
+                    print(
+                        "\n"
+                        "========================================\n"
+                        "JUST JOIN IT - STOP\n"
+                        "========================================"
+                    )
+
+                    print(
+                        f"Powód zatrzymania: {error}"
+                    )
+
+                    print(
+                        "Nie wykonujemy kolejnych "
+                        "wyszukiwań Just Join IT."
+                    )
+
+                    break
 
                 except Exception as error:
 
