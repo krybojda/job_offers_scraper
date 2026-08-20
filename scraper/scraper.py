@@ -62,11 +62,11 @@ RUN_PRACUJ = False
 RUN_PRACUJ_DETAILS = False
 
 RUN_NOFLUFFJOBS = True
-RUN_NOFLUFFJOBS_DETAILS = False
+RUN_NOFLUFFJOBS_DETAILS = True
 
 
 # =========================================================
-# STAN PRACUJ.PL
+# STAN PRACUJ
 # =========================================================
 
 PRACUJ_STATE_FILE = os.path.join(
@@ -77,16 +77,13 @@ PRACUJ_STATE_FILE = os.path.join(
 
 def load_pracuj_state():
     """
-    Wczytuje indeks keywordu, od którego należy
-    rozpocząć kolejny przebieg Pracuj.pl.
-
-    Jeżeli pliku nie ma albo jest uszkodzony,
-    zaczynamy od pierwszego keywordu.
+    Wczytuje indeks keywordu Pracuj.pl.
     """
 
     if not os.path.exists(
         PRACUJ_STATE_FILE
     ):
+
         return 0
 
     try:
@@ -109,6 +106,7 @@ def load_pracuj_state():
         )
 
         if index < 0:
+
             return 0
 
         return index
@@ -121,11 +119,6 @@ def load_pracuj_state():
             f"{error}"
         )
 
-        print(
-            "[PRACUJ] Zaczynam od "
-            "pierwszego keywordu."
-        )
-
         return 0
 
 
@@ -133,8 +126,7 @@ def save_pracuj_state(
     keyword_index,
 ):
     """
-    Zapisuje indeks keywordu, który ma zostać
-    wykonany przy następnym uruchomieniu.
+    Zapisuje indeks kolejnego keywordu.
     """
 
     try:
@@ -175,14 +167,9 @@ def save_pracuj_state(
             f"{error}"
         )
 
-def reset_pracuj_state():
-    """
-    Wraca do pierwszego keywordu.
-    """
 
-    save_pracuj_state(
-        0
-    )
+def reset_pracuj_state():
+    save_pracuj_state(0)
 
 
 # =========================================================
@@ -196,20 +183,12 @@ def process_jobs(
     total_stats,
 ):
     """
-    Wspólna obsługa ofert niezależnie od portalu.
+    Zapisuje oferty do MySQL.
     """
 
     for job in jobs:
 
-        # -------------------------------------------------
-        # ZNALEZIONA OFERTA
-        # -------------------------------------------------
-
         total_stats["seen"] += 1
-
-        # -------------------------------------------------
-        # FILTR IGNOROWANYCH
-        # -------------------------------------------------
 
         if is_ignored_job(
             job["title"],
@@ -225,19 +204,11 @@ def process_jobs(
 
             continue
 
-        # -------------------------------------------------
-        # MYSQL
-        # -------------------------------------------------
-
         result = save_job(
             job
         )
 
         total_stats["saved"] += 1
-
-        # -------------------------------------------------
-        # KOLEJKA SZCZEGÓŁÓW
-        # -------------------------------------------------
 
         if (
             result["needs_details"]
@@ -256,11 +227,8 @@ def process_jobs(
 
 def retry_details():
     """
-    Ponownie pobiera szczegóły ofert.
-
-    Respektuje:
-        RUN_JUSTJOIN_DETAILS
-        RUN_PRACUJ_DETAILS
+    Ponownie pobiera szczegóły dla ofert,
+    które ich jeszcze nie mają.
     """
 
     print(
@@ -309,6 +277,19 @@ def retry_details():
             )
         )
 
+    if (
+        RUN_NOFLUFFJOBS
+        and RUN_NOFLUFFJOBS_DETAILS
+    ):
+
+        portals.append(
+            (
+                "nofluffjobs",
+                scrape_nofluffjobs_details,
+                NoFluffJobsBlockedError,
+            )
+        )
+
     if not portals:
 
         print(
@@ -353,6 +334,7 @@ def retry_details():
                 )
 
                 if not jobs:
+
                     continue
 
                 context = browser.new_context(
@@ -421,7 +403,8 @@ def retry_details():
                             )
 
                             print(
-                                f"{portal.upper()} - STOP"
+                                f"{portal.upper()} "
+                                "- STOP SZCZEGÓŁÓW"
                             )
 
                             print(
@@ -443,7 +426,7 @@ def retry_details():
 
                             print(
                                 "[ERROR] Szczegóły "
-                                f"{job['url']}: "
+                                f"{portal}: "
                                 f"{error}"
                             )
 
@@ -462,22 +445,10 @@ def retry_details():
 
 
 # =========================================================
-# GŁÓWNY PRZEBIEG
+# GŁÓWNY SCRAPE
 # =========================================================
 
 def run_scrape():
-    """
-    Wykonuje jeden pełny przebieg.
-
-    Dla Pracuj.pl:
-        - każdy keyword ma osobny context,
-        - po poprawnym zakończeniu keywordu
-          zapisujemy kolejny indeks,
-        - po 403 bieżący keyword NIE jest oznaczany
-          jako zakończony,
-        - następne uruchomienie zaczyna właśnie
-          od tego keywordu.
-    """
 
     print(
         "\n========================================"
@@ -490,10 +461,6 @@ def run_scrape():
     print(
         "========================================"
     )
-
-    # =====================================================
-    # KONFIGURACJA
-    # =====================================================
 
     keywords = load_keywords()
 
@@ -523,7 +490,7 @@ def run_scrape():
         )
 
     # =====================================================
-    # STATUS PORTALI
+    # STATUS
     # =====================================================
 
     print(
@@ -570,10 +537,6 @@ def run_scrape():
             "Nie udało się połączyć z MySQL."
         )
 
-    # =====================================================
-    # STATYSTYKI
-    # =====================================================
-
     total_stats = {
         "seen": 0,
         "saved": 0,
@@ -581,7 +544,7 @@ def run_scrape():
     }
 
     # =====================================================
-    # ZMIENNE PORTALI
+    # ZBIORY / KOLEJKI
     # =====================================================
 
     justjoin_seen_ids = set()
@@ -606,9 +569,9 @@ def run_scrape():
             headless=HEADLESS
         )
 
-        # =================================================
+        # -------------------------------------------------
         # JUST JOIN
-        # =================================================
+        # -------------------------------------------------
 
         justjoin_context = None
         justjoin_page = None
@@ -639,9 +602,9 @@ def run_scrape():
 
         try:
 
-            # =============================================
-            # JUST JOIN IT
-            # =============================================
+            # =================================================
+            # JUST JOIN
+            # =================================================
 
             if RUN_JUSTJOIN:
 
@@ -718,18 +681,19 @@ def run_scrape():
 
                         print(
                             "\n"
-                            "========================================\n"
-                            "JUST JOIN IT - STOP\n"
+                            "========================================"
+                        )
+
+                        print(
+                            "JUST JOIN IT - STOP"
+                        )
+
+                        print(
                             "========================================"
                         )
 
                         print(
                             f"Powód: {error}"
-                        )
-
-                        print(
-                            "Nie wykonujemy kolejnych "
-                            "wyszukiwań Just Join."
                         )
 
                         break
@@ -756,23 +720,15 @@ def run_scrape():
                         ),
                     )
 
-                else:
-
-                    print(
-                        "[AKTYWNOŚĆ] Just Join: "
-                        "pominięto missed_count "
-                        "z powodu niepełnego skanu."
-                    )
-
             else:
 
                 print(
                     "\n[JUST JOIN] WYŁĄCZONE"
                 )
 
-            # =============================================
-            # PRACUJ.PL
-            # =============================================
+            # =================================================
+            # PRACUJ
+            # =================================================
 
             if RUN_PRACUJ:
 
@@ -788,45 +744,17 @@ def run_scrape():
                     "========================================"
                 )
 
-                # -----------------------------------------
-                # ODCZYT STANU
-                # -----------------------------------------
-
                 start_index = (
                     load_pracuj_state()
                 )
-
-                # -----------------------------------------
-                # WALIDACJA
-                # -----------------------------------------
 
                 if start_index >= len(
                     keywords
                 ):
 
-                    print(
-                        "[PRACUJ] Zapisany indeks "
-                        "jest poza zakresem."
-                    )
-
-                    print(
-                        "[PRACUJ] Resetuję stan "
-                        "do pierwszego keywordu."
-                    )
-
                     start_index = 0
 
                     reset_pracuj_state()
-
-                print(
-                    "\n[PRACUJ] Rozpoczynam od "
-                    f"keywordu #{start_index + 1}: "
-                    f"{keywords[start_index]}"
-                )
-
-                # -----------------------------------------
-                # PRZEJŚCIE OD ZAPISANEGO INDEKSU
-                # -----------------------------------------
 
                 for index in range(
                     start_index,
@@ -836,10 +764,6 @@ def run_scrape():
                     keyword = keywords[
                         index
                     ]
-
-                    # -------------------------------------
-                    # PRZERWA
-                    # -------------------------------------
 
                     delay = random.uniform(
                         MIN_DELAY,
@@ -860,10 +784,6 @@ def run_scrape():
                         "\n[PRACUJ] Nowy kontekst "
                         f"dla keywordu: {keyword}"
                     )
-
-                    # -------------------------------------
-                    # NOWY CONTEXT
-                    # -------------------------------------
 
                     pracuj_context = (
                         browser.new_context(
@@ -895,18 +815,9 @@ def run_scrape():
                             max_delay=MAX_DELAY,
                         )
 
-                        # ---------------------------------
-                        # ZACHOWAJ ZNALEZIONE OFERTY
-                        # ---------------------------------
-
                         pracuj_seen_ids.update(
                             seen_ids
                         )
-
-                        # ---------------------------------
-                        # JEŻELI TEN KEYWORD ZAKOŃCZYŁ SIĘ
-                        # PRAWIDŁOWO
-                        # ---------------------------------
 
                         if scan_complete:
 
@@ -915,10 +826,6 @@ def run_scrape():
                         else:
 
                             pracuj_complete = False
-
-                        # ---------------------------------
-                        # ZAPIS DO MYSQL
-                        # ---------------------------------
 
                         process_jobs(
                             jobs=jobs,
@@ -933,19 +840,6 @@ def run_scrape():
                             ),
                         )
 
-                        # ---------------------------------
-                        # STAN
-                        # ---------------------------------
-                        #
-                        # WAŻNE:
-                        #
-                        # Zapisujemy kolejny indeks
-                        # dopiero po poprawnym ukończeniu
-                        # CAŁEGO keywordu.
-                        #
-                        # Jeżeli był 403, tutaj nie wchodzimy.
-                        #
-
                         if keyword_completed:
 
                             next_index = (
@@ -956,23 +850,7 @@ def run_scrape():
                                 keywords
                             ):
 
-                                # Cała lista zakończona.
-                                # Następny pełny przebieg
-                                # zacznie od pierwszego keywordu.
-
                                 reset_pracuj_state()
-
-                                print(
-                                    "\n[PRACUJ] "
-                                    "Cała lista keywordów "
-                                    "została zakończona."
-                                )
-
-                                print(
-                                    "[PRACUJ] Następny "
-                                    "przebieg zacznie "
-                                    "od pierwszego keywordu."
-                                )
 
                             else:
 
@@ -980,30 +858,7 @@ def run_scrape():
                                     next_index
                                 )
 
-                                print(
-                                    "[PRACUJ] "
-                                    "Keyword zakończony."
-                                )
-
-                                print(
-                                    "[PRACUJ] Następny "
-                                    "przy uruchomieniu: "
-                                    f"{keywords[next_index]}"
-                                )
-
                         else:
-
-                            print(
-                                "[PRACUJ] Keyword "
-                                "nie został zakończony."
-                            )
-
-                            print(
-                                "[PRACUJ] Przy następnym "
-                                "uruchomieniu zostanie "
-                                "powtórzony: "
-                                f"{keyword}"
-                            )
 
                             break
 
@@ -1032,18 +887,6 @@ def run_scrape():
                             f"Powód: {error}"
                         )
 
-                        print(
-                            "Bieżący keyword NIE został "
-                            "oznaczony jako zakończony."
-                        )
-
-                        print(
-                            "Następne uruchomienie "
-                            "powtórzy właśnie ten keyword."
-                        )
-
-                        # WAŻNE:
-                        # NIE zapisujemy kolejnego indeksu.
                         break
 
                     except Exception as error:
@@ -1056,32 +899,17 @@ def run_scrape():
                             f"{error}"
                         )
 
-                        print(
-                            "[PRACUJ] Bieżący keyword "
-                            "nie zostanie oznaczony "
-                            "jako zakończony."
-                        )
-
                         break
 
                     finally:
 
-                        # ---------------------------------
-                        # ZAMKNIĘCIE CONTEXTU
-                        # ---------------------------------
-
                         pracuj_page.close()
-
                         pracuj_context.close()
 
                         print(
                             "[PRACUJ] Zamknięto "
                             f"kontekst: {keyword}"
                         )
-
-                # -----------------------------------------
-                # MISSED COUNT
-                # -----------------------------------------
 
                 if pracuj_complete:
 
@@ -1099,8 +927,7 @@ def run_scrape():
 
                     print(
                         "[AKTYWNOŚĆ] Pracuj.pl: "
-                        "pominięto missed_count "
-                        "z powodu niepełnego skanu."
+                        "pominięto missed_count."
                     )
 
             else:
@@ -1109,9 +936,9 @@ def run_scrape():
                     "\n[PRACUJ.PL] WYŁĄCZONE"
                 )
 
-            # =====================================================
+            # =================================================
             # NO FLUFF JOBS
-            # =====================================================
+            # =================================================
 
             if RUN_NOFLUFFJOBS:
 
@@ -1130,10 +957,6 @@ def run_scrape():
                 for index, keyword in enumerate(
                     keywords
                 ):
-
-                    # ---------------------------------------------
-                    # PRZERWA
-                    # ---------------------------------------------
 
                     delay = random.uniform(
                         MIN_DELAY,
@@ -1155,10 +978,6 @@ def run_scrape():
                         "Nowy kontekst dla keywordu: "
                         f"{keyword}"
                     )
-
-                    # ---------------------------------------------
-                    # NOWY CONTEXT DLA KAŻDEGO KEYWORDU
-                    # ---------------------------------------------
 
                     nofluffjobs_context = (
                         browser.new_context(
@@ -1194,7 +1013,9 @@ def run_scrape():
 
                         if not scan_complete:
 
-                            nofluffjobs_complete = False
+                            nofluffjobs_complete = (
+                                False
+                            )
 
                         process_jobs(
                             jobs=jobs,
@@ -1250,11 +1071,6 @@ def run_scrape():
                             f"Powód: {error}"
                         )
 
-                        print(
-                            "Nie wykonujemy kolejnych "
-                            "keywordów No Fluff Jobs."
-                        )
-
                         break
 
                     except Exception as error:
@@ -1272,17 +1088,12 @@ def run_scrape():
                     finally:
 
                         nofluffjobs_page.close()
-
                         nofluffjobs_context.close()
 
                         print(
                             "[NO FLUFF JOBS] Zamknięto "
                             f"kontekst: {keyword}"
                         )
-
-                # ---------------------------------------------
-                # MISSED COUNT
-                # ---------------------------------------------
 
                 if nofluffjobs_complete:
 
@@ -1300,8 +1111,7 @@ def run_scrape():
 
                     print(
                         "[AKTYWNOŚĆ] No Fluff Jobs: "
-                        "pominięto missed_count "
-                        "z powodu niepełnego skanu."
+                        "pominięto missed_count."
                     )
 
             else:
@@ -1310,9 +1120,9 @@ def run_scrape():
                     "\n[NO FLUFF JOBS] WYŁĄCZONE"
                 )
 
-            # =============================================
+            # =================================================
             # SZCZEGÓŁY JUST JOIN
-            # =============================================
+            # =================================================
 
             if (
                 RUN_JUSTJOIN
@@ -1379,20 +1189,8 @@ def run_scrape():
                     except PortalBlockedError as error:
 
                         print(
-                            "\n"
-                            "========================================"
-                        )
-
-                        print(
-                            "JUST JOIN - STOP SZCZEGÓŁÓW"
-                        )
-
-                        print(
-                            "========================================"
-                        )
-
-                        print(
-                            f"Powód: {error}"
+                            "[JUST JOIN] "
+                            f"STOP SZCZEGÓŁÓW: {error}"
                         )
 
                         break
@@ -1404,157 +1202,187 @@ def run_scrape():
                             f"szczegóły: {error}"
                         )
 
-            elif RUN_JUSTJOIN:
+            # =================================================
+            # SZCZEGÓŁY PRACUJ
+            # =================================================
+
+            if (
+                RUN_PRACUJ
+                and RUN_PRACUJ_DETAILS
+            ):
 
                 print(
-                    "\n[JUST JOIN] "
+                    "\n========================================"
+                )
+
+                print(
+                    "SZCZEGÓŁY PRACUJ.PL"
+                )
+
+                print(
+                    "========================================"
+                )
+
+                print(
+                    "Ofert do pobrania szczegółów: "
+                    f"{len(pracuj_details_queue)}"
+                )
+
+                # Celowo pozostawiamy obsługę
+                # przez --retry-details.
+                #
+                # Normalny przebieg nie otwiera
+                # dodatkowych stron, jeżeli nie
+                # ma takiej potrzeby.
+
+            # =================================================
+            # SZCZEGÓŁY NO FLUFF JOBS
+            # =================================================
+
+            if (
+                RUN_NOFLUFFJOBS
+                and RUN_NOFLUFFJOBS_DETAILS
+            ):
+
+                print(
+                    "\n========================================"
+                )
+
+                print(
+                    "SZCZEGÓŁY NO FLUFF JOBS"
+                )
+
+                print(
+                    "========================================"
+                )
+
+                print(
+                    "Ofert do pobrania szczegółów: "
+                    f"{len(nofluffjobs_details_queue)}"
+                )
+
+                if nofluffjobs_details_queue:
+
+                    detail_context = (
+                        browser.new_context(
+                            user_agent=USER_AGENT,
+                            viewport={
+                                "width": 1440,
+                                "height": 1000,
+                            },
+                            locale="pl-PL",
+                        )
+                    )
+
+                    detail_page = (
+                        detail_context.new_page()
+                    )
+
+                    try:
+
+                        for index, job in enumerate(
+                            nofluffjobs_details_queue
+                        ):
+
+                            if index > 0:
+
+                                delay = random.uniform(
+                                    DETAIL_MIN_DELAY,
+                                    DETAIL_MAX_DELAY,
+                                )
+
+                                print(
+                                    "\nPrzerwa przed "
+                                    "kolejną ofertą szczegółową: "
+                                    f"{delay:.1f} s"
+                                )
+
+                                time.sleep(
+                                    delay
+                                )
+
+                            try:
+
+                                details = (
+                                    scrape_nofluffjobs_details(
+                                        detail_page,
+                                        job,
+                                    )
+                                )
+
+                                if details is not None:
+
+                                    save_job_details(
+                                        portal=(
+                                            "nofluffjobs"
+                                        ),
+                                        source_id=(
+                                            job[
+                                                "source_id"
+                                            ]
+                                        ),
+                                        details=details,
+                                    )
+
+                            except NoFluffJobsBlockedError as error:
+
+                                print(
+                                    "\n"
+                                    "========================================"
+                                )
+
+                                print(
+                                    "NO FLUFF JOBS "
+                                    "- STOP SZCZEGÓŁÓW"
+                                )
+
+                                print(
+                                    "========================================"
+                                )
+
+                                print(
+                                    f"Powód: {error}"
+                                )
+
+                                break
+
+                            except Exception as error:
+
+                                print(
+                                    "[ERROR] "
+                                    "No Fluff Jobs "
+                                    f"szczegóły: {error}"
+                                )
+
+                    finally:
+
+                        detail_page.close()
+                        detail_context.close()
+
+            elif RUN_NOFLUFFJOBS:
+
+                print(
+                    "\n[NO FLUFF JOBS] "
                     "SZCZEGÓŁY WYŁĄCZONE"
                 )
 
         finally:
 
-            # =============================================
-            # ZAMKNIĘCIE JUST JOIN
-            # =============================================
-
             if RUN_JUSTJOIN:
 
                 if justjoin_page is not None:
+
                     justjoin_page.close()
 
                 if justjoin_details_page is not None:
+
                     justjoin_details_page.close()
 
                 if justjoin_context is not None:
+
                     justjoin_context.close()
 
             browser.close()
-
-    # =====================================================
-    # SZCZEGÓŁY PRACUJ
-    # =====================================================
-
-    if (
-        RUN_PRACUJ
-        and RUN_PRACUJ_DETAILS
-    ):
-
-        print(
-            "\n========================================"
-        )
-
-        print(
-            "SZCZEGÓŁY PRACUJ.PL"
-        )
-
-        print(
-            "========================================"
-        )
-
-        print(
-            "Ofert do pobrania szczegółów: "
-            f"{len(pracuj_details_queue)}"
-        )
-
-        with sync_playwright() as playwright:
-
-            browser = playwright.chromium.launch(
-                headless=HEADLESS
-            )
-
-            context = browser.new_context(
-                user_agent=USER_AGENT,
-                viewport={
-                    "width": 1440,
-                    "height": 1000,
-                },
-                locale="pl-PL",
-            )
-
-            page = context.new_page()
-
-            try:
-
-                for index, job in enumerate(
-                    pracuj_details_queue
-                ):
-
-                    if index > 0:
-
-                        delay = random.uniform(
-                            DETAIL_MIN_DELAY,
-                            DETAIL_MAX_DELAY,
-                        )
-
-                        print(
-                            "\nPrzerwa przed "
-                            "kolejną ofertą szczegółową: "
-                            f"{delay:.1f} s"
-                        )
-
-                        time.sleep(
-                            delay
-                        )
-
-                    try:
-
-                        details = (
-                            scrape_pracuj_details(
-                                page,
-                                job,
-                            )
-                        )
-
-                        if details is not None:
-
-                            save_job_details(
-                                portal="pracuj",
-                                source_id=job[
-                                    "source_id"
-                                ],
-                                details=details,
-                            )
-
-                    except PracujBlockedError as error:
-
-                        print(
-                            "\n"
-                            "========================================"
-                        )
-
-                        print(
-                            "PRACUJ.PL - STOP SZCZEGÓŁÓW"
-                        )
-
-                        print(
-                            "========================================"
-                        )
-
-                        print(
-                            f"Powód: {error}"
-                        )
-
-                        break
-
-                    except Exception as error:
-
-                        print(
-                            "[ERROR] Pracuj.pl "
-                            f"szczegóły: {error}"
-                        )
-
-            finally:
-
-                page.close()
-                context.close()
-                browser.close()
-
-    elif RUN_PRACUJ:
-
-        print(
-            "\n[PRACUJ.PL] "
-            "SZCZEGÓŁY WYŁĄCZONE"
-        )
 
     # =====================================================
     # PODSUMOWANIE
@@ -1592,6 +1420,10 @@ def run_scrape():
     )
 
 
+# =========================================================
+# ARGUMENTY
+# =========================================================
+
 def parse_args():
 
     parser = argparse.ArgumentParser(
@@ -1601,18 +1433,15 @@ def parse_args():
     parser.add_argument(
         "--once",
         action="store_true",
-        help=(
-            "Wykonaj jeden przebieg "
-            "i zakończ."
-        ),
+        help="Wykonaj jeden przebieg.",
     )
 
     parser.add_argument(
         "--retry-details",
         action="store_true",
         help=(
-            "Pobierz ponownie szczegóły "
-            "ofert bez details_scraped_at."
+            "Ponownie pobierz szczegóły "
+            "ofert bez szczegółów."
         ),
     )
 
@@ -1621,13 +1450,17 @@ def parse_args():
         type=int,
         default=SCRAPE_INTERVAL,
         help=(
-            "Interwał między pełnymi "
-            "przebiegami w sekundach."
+            "Interwał między przebiegami "
+            "w sekundach."
         ),
     )
 
     return parser.parse_args()
 
+
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
 
@@ -1645,19 +1478,11 @@ def main():
         "========================================"
     )
 
-    # =====================================================
-    # RETRY DETAILS
-    # =====================================================
-
     if args.retry_details:
 
         retry_details()
 
         return
-
-    # =====================================================
-    # JEDEN PRZEBIEG
-    # =====================================================
 
     if args.once:
 
@@ -1668,10 +1493,6 @@ def main():
         run_scrape()
 
         return
-
-    # =====================================================
-    # TRYB CIĄGŁY
-    # =====================================================
 
     print(
         "Tryb: CIĄGŁY"
