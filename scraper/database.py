@@ -54,23 +54,7 @@ def save_job(job):
     """
     Dodaje nową ofertę albo aktualizuje istniejącą.
 
-    Zwraca:
-        {
-            "is_new": bool,
-            "needs_details": bool
-        }
-
-    Nowa oferta:
-        first_seen_at = NOW()
-        last_seen_at = NOW()
-        missed_count = 0
-        is_active = 1
-
-    Istniejąca oferta:
-        first_seen_at pozostaje bez zmian
-        last_seen_at = NOW()
-        missed_count = 0
-        is_active = 1
+    Szczegóły nigdy nie są kasowane podczas aktualizacji.
     """
 
     connection = get_db_connection()
@@ -78,10 +62,6 @@ def save_job(job):
     try:
 
         cursor = connection.cursor()
-
-        # -------------------------------------------------
-        # Czy oferta już istnieje?
-        # -------------------------------------------------
 
         cursor.execute(
             """
@@ -105,10 +85,6 @@ def save_job(job):
             is_new
             or existing[0] is None
         )
-
-        # -------------------------------------------------
-        # INSERT / UPDATE
-        # -------------------------------------------------
 
         sql = """
             INSERT INTO jobs (
@@ -191,8 +167,7 @@ def save_job(job):
             )
         else:
             print(
-                f"[AKTUALIZACJA] "
-                f"{job['title']}"
+                f"[AKTUALIZACJA] {job['title']}"
             )
 
         return {
@@ -212,6 +187,10 @@ def save_job_details(
 ):
     """
     Zapisuje szczegółowe informacje o ofercie.
+
+    details_scraped_at jest ustawiane TYLKO wtedy,
+    gdy strona szczegółowa została poprawnie odczytana
+    i otrzymaliśmy wynik details.
     """
 
     connection = get_db_connection()
@@ -222,21 +201,21 @@ def save_job_details(
         sql = """
             UPDATE jobs
             SET
-                title = COALESCE(%s, title),
-                company = COALESCE(%s, company),
-                location = COALESCE(%s, location),
-                work_mode = COALESCE(%s, work_mode),
-                work_type = COALESCE(%s, work_type),
-                experience_level = COALESCE(%s, experience_level),
-                contract_type = COALESCE(%s, contract_type),
-                salary = COALESCE(%s, salary),
+                title = COALESCE(NULLIF(%s, ''), title),
+                company = COALESCE(NULLIF(%s, ''), company),
+                location = COALESCE(NULLIF(%s, ''), location),
+                work_mode = COALESCE(NULLIF(%s, ''), work_mode),
+                work_type = COALESCE(NULLIF(%s, ''), work_type),
+                experience_level = COALESCE(NULLIF(%s, ''), experience_level),
+                contract_type = COALESCE(NULLIF(%s, ''), contract_type),
+                salary = COALESCE(NULLIF(%s, ''), salary),
                 published_at = COALESCE(%s, published_at),
-                job_description = %s,
-                tech_stack = %s,
-                office_location = %s,
-                about_company = %s,
-                expires_text = %s,
-                expires_at = %s,
+                job_description = COALESCE(NULLIF(%s, ''), job_description),
+                tech_stack = COALESCE(NULLIF(%s, ''), tech_stack),
+                office_location = COALESCE(NULLIF(%s, ''), office_location),
+                about_company = COALESCE(NULLIF(%s, ''), about_company),
+                expires_text = COALESCE(NULLIF(%s, ''), expires_text),
+                expires_at = COALESCE(%s, expires_at),
                 details_scraped_at = NOW()
             WHERE portal = %s
               AND source_id = %s
@@ -267,6 +246,12 @@ def save_job_details(
             values,
         )
 
+        if cursor.rowcount == 0:
+            raise RuntimeError(
+                "Nie znaleziono oferty do aktualizacji: "
+                f"portal={portal}, source_id={source_id}"
+            )
+
         connection.commit()
 
         print(
@@ -275,6 +260,7 @@ def save_job_details(
 
     finally:
         connection.close()
+
 
 def mark_missing_jobs(
     portal,
@@ -294,11 +280,6 @@ def mark_missing_jobs(
     try:
 
         cursor = connection.cursor()
-
-        # -------------------------------------------------
-        # Oferty znalezione:
-        # reset missed_count i aktywność.
-        # -------------------------------------------------
 
         if seen_source_ids:
 
@@ -326,11 +307,6 @@ def mark_missing_jobs(
                 [portal] + source_ids,
             )
 
-            # -------------------------------------------------
-            # Aktywne oferty, których nie znaleziono:
-            # missed_count + 1
-            # -------------------------------------------------
-
             sql_missing = f"""
                 UPDATE jobs
                 SET
@@ -349,8 +325,6 @@ def mark_missing_jobs(
 
         else:
 
-            # Jeżeli pełny skan nie zwrócił żadnej oferty,
-            # zwiększamy missed_count wszystkim aktywnym.
             cursor.execute(
                 """
                 UPDATE jobs
@@ -361,10 +335,6 @@ def mark_missing_jobs(
                 """,
                 (portal,),
             )
-
-        # -------------------------------------------------
-        # Oznacz nieaktywne po przekroczeniu progu.
-        # -------------------------------------------------
 
         cursor.execute(
             """
@@ -397,7 +367,10 @@ def get_jobs_without_details(
 ):
     """
     Pobiera oferty, które nie mają jeszcze
-    pobranych szczegółów.
+    details_scraped_at.
+
+    Zwraca wyłącznie rekordy rzeczywiście istniejące
+    w bazie i sortuje je od najstarszych ID.
     """
 
     connection = get_db_connection()
@@ -418,22 +391,34 @@ def get_jobs_without_details(
                 location,
                 work_mode,
                 work_type,
+                experience_level,
+                contract_type,
                 salary,
                 url,
-                keyword
+                keyword,
+                published_at
             FROM jobs
             WHERE portal = %s
               AND details_scraped_at IS NULL
+              AND is_active = 1
             ORDER BY id ASC
             LIMIT %s
             """,
             (
                 portal,
-                limit,
+                int(limit),
             ),
         )
 
-        return cursor.fetchall()
+        jobs = cursor.fetchall()
+
+        print(
+            f"[SZCZEGÓŁY] DB zwróciła: "
+            f"{len(jobs)} ofert bez szczegółów "
+            f"dla portalu {portal}"
+        )
+
+        return jobs
 
     finally:
         connection.close()
