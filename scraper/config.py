@@ -65,6 +65,13 @@ PRACUJ_BASE_URL = (
 # Gdy dopracujemy bezpieczną paginację, zmienimy na >1.
 PRACUJ_MAX_PAGES = 1
 
+# =========================================================
+# NOFLUFFJOBS
+# =========================================================
+NOFLUFFJOBS_BASE_URL = (
+    "https://nofluffjobs.com"
+)
+
 
 # =========================================================
 # PRZEGLĄDARKA

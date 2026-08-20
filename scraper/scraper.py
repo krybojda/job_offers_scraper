@@ -44,6 +44,12 @@ from pracuj import (
     scrape_pracuj_details,
 )
 
+from nofluffjobs import (
+    NoFluffJobsBlockedError,
+    scrape_nofluffjobs,
+    scrape_nofluffjobs_details,
+)
+
 
 # =========================================================
 # WŁĄCZANIE / WYŁĄCZANIE PORTALI
@@ -52,8 +58,11 @@ from pracuj import (
 RUN_JUSTJOIN = False
 RUN_JUSTJOIN_DETAILS = False
 
-RUN_PRACUJ = True
+RUN_PRACUJ = False
 RUN_PRACUJ_DETAILS = False
+
+RUN_NOFLUFFJOBS = True
+RUN_NOFLUFFJOBS_DETAILS = False
 
 
 # =========================================================
@@ -541,6 +550,16 @@ def run_scrape():
         f"{'TAK' if RUN_PRACUJ_DETAILS else 'NIE'}"
     )
 
+    print(
+        f"  No Fluff Jobs: "
+        f"{'TAK' if RUN_NOFLUFFJOBS else 'NIE'}"
+    )
+
+    print(
+        f"    szczegóły: "
+        f"{'TAK' if RUN_NOFLUFFJOBS_DETAILS else 'NIE'}"
+    )
+
     # =====================================================
     # MYSQL
     # =====================================================
@@ -572,6 +591,10 @@ def run_scrape():
     pracuj_seen_ids = set()
     pracuj_complete = True
     pracuj_details_queue = []
+
+    nofluffjobs_seen_ids = set()
+    nofluffjobs_complete = True
+    nofluffjobs_details_queue = []
 
     # =====================================================
     # PLAYWRIGHT
@@ -1084,6 +1107,207 @@ def run_scrape():
 
                 print(
                     "\n[PRACUJ.PL] WYŁĄCZONE"
+                )
+
+            # =====================================================
+            # NO FLUFF JOBS
+            # =====================================================
+
+            if RUN_NOFLUFFJOBS:
+
+                print(
+                    "\n========================================"
+                )
+
+                print(
+                    "SCRAPOWANIE NO FLUFF JOBS"
+                )
+
+                print(
+                    "========================================"
+                )
+
+                for index, keyword in enumerate(
+                    keywords
+                ):
+
+                    # ---------------------------------------------
+                    # PRZERWA
+                    # ---------------------------------------------
+
+                    delay = random.uniform(
+                        MIN_DELAY,
+                        MAX_DELAY,
+                    )
+
+                    print(
+                        "\nPrzerwa przed "
+                        "wyszukiwaniem No Fluff Jobs: "
+                        f"{delay:.1f} s"
+                    )
+
+                    time.sleep(
+                        delay
+                    )
+
+                    print(
+                        "\n[NO FLUFF JOBS] "
+                        "Nowy kontekst dla keywordu: "
+                        f"{keyword}"
+                    )
+
+                    # ---------------------------------------------
+                    # NOWY CONTEXT DLA KAŻDEGO KEYWORDU
+                    # ---------------------------------------------
+
+                    nofluffjobs_context = (
+                        browser.new_context(
+                            user_agent=USER_AGENT,
+                            viewport={
+                                "width": 1440,
+                                "height": 1000,
+                            },
+                            locale="pl-PL",
+                        )
+                    )
+
+                    nofluffjobs_page = (
+                        nofluffjobs_context.new_page()
+                    )
+
+                    try:
+
+                        (
+                            jobs,
+                            seen_ids,
+                            scan_complete,
+                        ) = scrape_nofluffjobs(
+                            page=nofluffjobs_page,
+                            keyword=keyword,
+                            min_delay=MIN_DELAY,
+                            max_delay=MAX_DELAY,
+                        )
+
+                        nofluffjobs_seen_ids.update(
+                            seen_ids
+                        )
+
+                        if not scan_complete:
+
+                            nofluffjobs_complete = False
+
+                        process_jobs(
+                            jobs=jobs,
+                            ignored_keywords=(
+                                ignored_keywords
+                            ),
+                            details_queue=(
+                                nofluffjobs_details_queue
+                            ),
+                            total_stats=(
+                                total_stats
+                            ),
+                        )
+
+                        if scan_complete:
+
+                            print(
+                                "[NO FLUFF JOBS] "
+                                f"Keyword zakończony: "
+                                f"{keyword}"
+                            )
+
+                        else:
+
+                            print(
+                                "[NO FLUFF JOBS] "
+                                f"Keyword nie został "
+                                f"zakończony: {keyword}"
+                            )
+
+                    except NoFluffJobsBlockedError as error:
+
+                        nofluffjobs_complete = False
+
+                        print(
+                            "\n"
+                            "========================================"
+                        )
+
+                        print(
+                            "NO FLUFF JOBS - STOP"
+                        )
+
+                        print(
+                            "========================================"
+                        )
+
+                        print(
+                            f"Keyword: {keyword}"
+                        )
+
+                        print(
+                            f"Powód: {error}"
+                        )
+
+                        print(
+                            "Nie wykonujemy kolejnych "
+                            "keywordów No Fluff Jobs."
+                        )
+
+                        break
+
+                    except Exception as error:
+
+                        nofluffjobs_complete = False
+
+                        print(
+                            "[ERROR] No Fluff Jobs "
+                            f"dla '{keyword}': "
+                            f"{error}"
+                        )
+
+                        break
+
+                    finally:
+
+                        nofluffjobs_page.close()
+
+                        nofluffjobs_context.close()
+
+                        print(
+                            "[NO FLUFF JOBS] Zamknięto "
+                            f"kontekst: {keyword}"
+                        )
+
+                # ---------------------------------------------
+                # MISSED COUNT
+                # ---------------------------------------------
+
+                if nofluffjobs_complete:
+
+                    mark_missing_jobs(
+                        portal="nofluffjobs",
+                        seen_source_ids=(
+                            nofluffjobs_seen_ids
+                        ),
+                        threshold=(
+                            MISSED_THRESHOLD
+                        ),
+                    )
+
+                else:
+
+                    print(
+                        "[AKTYWNOŚĆ] No Fluff Jobs: "
+                        "pominięto missed_count "
+                        "z powodu niepełnego skanu."
+                    )
+
+            else:
+
+                print(
+                    "\n[NO FLUFF JOBS] WYŁĄCZONE"
                 )
 
             # =============================================
