@@ -41,23 +41,10 @@ UI_TEXTS = {
 }
 
 CITY_NAMES = {
-    "warszawa",
-    "kraków",
-    "wrocław",
-    "poznań",
-    "gdańsk",
-    "katowice",
-    "łódź",
-    "lublin",
-    "białystok",
-    "rzeszów",
-    "bydgoszcz",
-    "szczecin",
-    "krakow",
-    "wroclaw",
-    "poznan",
-    "gdansk",
-    "lodz",
+    "warszawa", "kraków", "wrocław", "poznań", "gdańsk",
+    "katowice", "łódź", "lublin", "białystok", "rzeszów",
+    "bydgoszcz", "szczecin", "krakow", "wroclaw", "poznan",
+    "gdansk", "lodz",
 }
 
 TECHNOLOGY_WORDS = {
@@ -120,23 +107,22 @@ def salary_matches(text):
 
 
 def find_salary(lines):
-    range_pattern = re.compile(
-        r"\d[\d\s.,]*\s*[–-]\s*\d[\d\s.,]*\s*"
-        r"(?:PLN|EUR|USD|GBP|CHF).*",
-        re.IGNORECASE,
-    )
-    single_pattern = re.compile(
-        r"\d[\d\s.,]*\s*(?:PLN|EUR|USD|GBP|CHF).*",
-        re.IGNORECASE,
-    )
+    patterns = [
+        re.compile(
+            r"\d[\d\s.,]*\s*[–-]\s*\d[\d\s.,]*\s*"
+            r"(?:PLN|EUR|USD|GBP|CHF).*",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\d[\d\s.,]*\s*(?:PLN|EUR|USD|GBP|CHF).*",
+            re.IGNORECASE,
+        ),
+    ]
 
-    for line in lines:
-        if range_pattern.search(line):
-            return line
-
-    for line in lines:
-        if single_pattern.search(line):
-            return line
+    for pattern in patterns:
+        for line in lines:
+            if pattern.search(line):
+                return line
 
     for line in lines:
         normalized = line.lower()
@@ -196,11 +182,11 @@ def find_work_mode(lines):
         if any(
             phrase in normalized
             for phrase in (
-                "bez pracy zdalnej",
-                "praca w biurze",
                 "praca stacjonarna",
+                "praca w biurze",
                 "on-site",
                 "onsite",
+                "office work",
             )
         ):
             return "Office"
@@ -233,28 +219,43 @@ def find_work_mode(lines):
 
 
 def find_work_type(lines, title=None):
+    """
+    Próbuje rozpoznać typ zatrudnienia / wymiar pracy.
+
+    No Fluff Jobs nie pokazuje tego pola identycznie
+    dla każdej oferty, dlatego sprawdzamy zarówno
+    polskie, jak i angielskie warianty.
+    """
+
     text = " ".join(lines)
     if title:
         text += " " + title
 
     normalized = text.lower()
 
-    if (
-        "pełny etat" in normalized
-        or "full-time" in normalized
-        or "full time" in normalized
+    if re.search(
+        r"\b(full[- ]?time|pełny etat|pełnym etacie)\b",
+        normalized,
     ):
         return "Full-time"
 
-    if (
-        "część etatu" in normalized
-        or "part-time" in normalized
-        or "part time" in normalized
+    if re.search(
+        r"\b(part[- ]?time|część etatu|część[- ]?etatu)\b",
+        normalized,
     ):
         return "Part-time"
 
-    if "freelance" in normalized:
+    if re.search(
+        r"\b(freelance|freelancer)\b",
+        normalized,
+    ):
         return "Freelance"
+
+    if re.search(
+        r"\b(b2b contract|kontrakt b2b)\b",
+        normalized,
+    ):
+        return "B2B"
 
     return None
 
@@ -262,23 +263,26 @@ def find_work_type(lines, title=None):
 def find_experience_level(title, lines):
     text = " ".join(lines)
 
-    explicit = re.search(
-        r"(?:poziom|level|experience level)\s*:?\s*"
+    explicit_patterns = [
+        r"(?:poziom|level|experience level)\s*[:\-]?\s*"
         r"(junior|mid|middle|regular|senior|expert|lead)",
-        text,
-        re.IGNORECASE,
-    )
-    if explicit:
-        value = explicit.group(1).lower()
-        return {
-            "junior": "Junior",
-            "mid": "Mid",
-            "middle": "Mid",
-            "regular": "Regular",
-            "senior": "Senior",
-            "expert": "Expert",
-            "lead": "Lead",
-        }[value]
+        r"(?:seniority|doświadczenie)\s*[:\-]?\s*"
+        r"(junior|mid|middle|regular|senior|expert|lead)",
+    ]
+
+    for pattern in explicit_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            value = match.group(1).lower()
+            return {
+                "junior": "Junior",
+                "mid": "Mid",
+                "middle": "Mid",
+                "regular": "Regular",
+                "senior": "Senior",
+                "expert": "Expert",
+                "lead": "Lead",
+            }[value]
 
     title_text = (title or "").lower()
     found = []
@@ -447,7 +451,7 @@ def extract_job_from_raw_item(item, keyword):
     if "/job/" not in href and "/job1/" not in href:
         return None
 
-    url = urljoin(NOF_FLUFF_BASE_URL, href)
+    url = urljoin(NOF_FLUFFJOBS_BASE_URL, href)
     source_id = generate_source_id(url)
     lines = clean_lines(item.get("cardText") or "")
     if not lines:
@@ -476,12 +480,11 @@ def extract_job_from_raw_item(item, keyword):
 
 def build_nofluffjobs_url(keyword):
     encoded_keyword = quote(keyword.strip(), safe="")
-    return f"{NO_FLUFF_BASE_URL}/pl?criteria={encoded_keyword}"
+    return f"{NOFLUFFJOBS_BASE_URL}/pl?criteria={encoded_keyword}"
 
 
 def scrape_nofluffjobs_page(page, keyword):
     url = build_nofluffjobs_url(keyword)
-
     print(f"\nNo Fluff Jobs → {keyword}")
     print(f"URL: {url}")
 
@@ -640,7 +643,6 @@ def extract_nofluff_section(lines, start_patterns, end_patterns):
         return None
 
     end_index = len(lines)
-
     for index in range(start_index, len(lines)):
         normalized = lines[index].lower().strip()
         if any(pattern in normalized for pattern in end_patterns):
@@ -654,25 +656,21 @@ def extract_nofluff_section(lines, start_patterns, end_patterns):
 def extract_nofluff_technologies(lines):
     display_names = {
         "aws": "AWS", "azure": "Azure", "gcp": "GCP",
-        "docker": "Docker", "kubernetes": "Kubernetes",
-        "terraform": "Terraform", "ansible": "Ansible",
-        "jenkins": "Jenkins", "gitlab": "GitLab", "github": "GitHub",
-        "python": "Python", "java": "Java", "javascript": "JavaScript",
-        "typescript": "TypeScript", "node.js": "Node.js", "go": "Go",
-        "c#": "C#", ".net": ".NET", "linux": "Linux", "sql": "SQL",
-        "postgresql": "PostgreSQL", "mysql": "MySQL", "oracle": "Oracle",
-        "grafana": "Grafana", "prometheus": "Prometheus", "helm": "Helm",
-        "argocd": "ArgoCD", "git": "Git", "ci/cd": "CI/CD",
-        "devops": "DevOps", "bash": "Bash", "powershell": "PowerShell",
-        "kotlin": "Kotlin", "ruby": "Ruby", "php": "PHP", "react": "React",
-        "angular": "Angular", "vue": "Vue", "spring": "Spring",
-        "django": "Django", "flask": "Flask", "fastapi": "FastAPI",
-        "redis": "Redis", "mongodb": "MongoDB", "elasticsearch": "Elasticsearch",
-        "kafka": "Kafka", "rabbitmq": "RabbitMQ", "openstack": "OpenStack",
-        "cloud": "Cloud", "backend": "Backend", "frontend": "Frontend",
-        "data": "Data", "ai/ml": "AI/ML", "security": "Security",
-        "testing": "Testing", "fullstack": "Fullstack", "mobile": "Mobile",
-        "erp": "ERP",
+        "docker": "Docker", "kubernetes": "Kubernetes", "terraform": "Terraform",
+        "ansible": "Ansible", "jenkins": "Jenkins", "gitlab": "GitLab", "github": "GitHub",
+        "python": "Python", "java": "Java", "javascript": "JavaScript", "typescript": "TypeScript",
+        "node.js": "Node.js", "go": "Go", "c#": "C#", ".net": ".NET", "linux": "Linux",
+        "sql": "SQL", "postgresql": "PostgreSQL", "mysql": "MySQL", "oracle": "Oracle",
+        "grafana": "Grafana", "prometheus": "Prometheus", "helm": "Helm", "argocd": "ArgoCD",
+        "git": "Git", "ci/cd": "CI/CD", "devops": "DevOps", "azure devops": "Azure DevOps",
+        "aws lambda": "AWS Lambda", "cloudformation": "CloudFormation", "bash": "Bash",
+        "powershell": "PowerShell", "kotlin": "Kotlin", "ruby": "Ruby", "php": "PHP",
+        "react": "React", "angular": "Angular", "vue": "Vue", "spring": "Spring",
+        "django": "Django", "flask": "Flask", "fastapi": "FastAPI", "redis": "Redis",
+        "mongodb": "MongoDB", "elasticsearch": "Elasticsearch", "kafka": "Kafka",
+        "rabbitmq": "RabbitMQ", "openstack": "OpenStack", "cloud": "Cloud", "backend": "Backend",
+        "frontend": "Frontend", "data": "Data", "ai/ml": "AI/ML", "security": "Security",
+        "testing": "Testing", "fullstack": "Fullstack", "mobile": "Mobile", "erp": "ERP",
     }
 
     result = []
@@ -687,19 +685,38 @@ def extract_nofluff_technologies(lines):
     return ", ".join(result) if result else None
 
 
-def _parse_json_date(value):
-    if not value:
+def _parse_datetime_value(value):
+    if value is None:
         return None
 
     text = str(value).strip()
+    if not text:
+        return None
+
+    if text.isdigit() and len(text) in {10, 13}:
+        try:
+            timestamp = int(text)
+            if len(text) == 13:
+                timestamp //= 1000
+            return datetime.fromtimestamp(timestamp)
+        except (ValueError, OSError, OverflowError):
+            pass
+
+    text = text.replace("Z", "+00:00")
 
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed.replace(tzinfo=None)
+        value = datetime.fromisoformat(text)
+        return value.replace(tzinfo=None)
     except ValueError:
         pass
 
-    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y"):
+    for fmt in (
+        "%Y-%m-%d",
+        "%Y-%m-%d %H:%M:%S",
+        "%d.%m.%Y",
+        "%d.%m.%Y %H:%M:%S",
+        "%Y/%m/%d",
+    ):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
@@ -708,14 +725,22 @@ def _parse_json_date(value):
     return None
 
 
-def _collect_json_ld_dates(page):
-    date_posted = None
-    valid_through = None
+def _collect_published_date(page, body_text):
+    """
+    Szuka daty publikacji w kilku źródłach HTML.
+    Nie wykorzystuje first_seen_at jako daty publikacji.
+    """
+
+    # -----------------------------------------------------
+    # 1. JSON-LD
+    # -----------------------------------------------------
 
     try:
         scripts = page.locator(
             "script[type='application/ld+json']"
         ).all_inner_texts()
+
+        stack = []
 
         for script_text in scripts:
             try:
@@ -723,32 +748,181 @@ def _collect_json_ld_dates(page):
             except Exception:
                 continue
 
-            stack = data if isinstance(data, list) else [data]
+            if isinstance(data, list):
+                stack.extend(data)
+            else:
+                stack.append(data)
 
-            while stack:
-                item = stack.pop()
-                if not isinstance(item, dict):
-                    continue
+        while stack:
+            item = stack.pop()
+            if not isinstance(item, dict):
+                continue
 
-                if item.get("datePosted") and not date_posted:
-                    date_posted = _parse_json_date(item["datePosted"])
+            for key in (
+                "datePosted",
+                "datePublished",
+                "publishedAt",
+                "published_at",
+                "publicationDate",
+                "publication_date",
+            ):
+                parsed = _parse_datetime_value(item.get(key))
+                if parsed:
+                    return parsed
 
-                if item.get("validThrough") and not valid_through:
-                    valid_through = _parse_json_date(item["validThrough"])
+            graph = item.get("@graph")
+            if isinstance(graph, list):
+                stack.extend(graph)
 
-                graph = item.get("@graph")
-                if isinstance(graph, list):
-                    stack.extend(graph)
-
-                for key in ("item", "mainEntity", "mainEntityOfPage"):
-                    nested = item.get(key)
-                    if isinstance(nested, dict):
-                        stack.append(nested)
+            for key in (
+                "item",
+                "mainEntity",
+                "mainEntityOfPage",
+                "job",
+                "offer",
+            ):
+                nested = item.get(key)
+                if isinstance(nested, dict):
+                    stack.append(nested)
+                elif isinstance(nested, list):
+                    stack.extend(nested)
 
     except Exception:
         pass
 
-    return date_posted, valid_through
+    # -----------------------------------------------------
+    # 2. Meta tags / time
+    # -----------------------------------------------------
+
+    try:
+        values = page.evaluate(
+            """
+            () => {
+                const result = [];
+
+                for (const meta of document.querySelectorAll(
+                    "meta[property], meta[name]"
+                )) {
+                    const key = (
+                        meta.getAttribute("property") ||
+                        meta.getAttribute("name") ||
+                        ""
+                    ).toLowerCase();
+
+                    if (
+                        key.includes("published") ||
+                        key.includes("publication") ||
+                        key === "date" ||
+                        key === "dateposted"
+                    ) {
+                        const value = meta.getAttribute("content");
+                        if (value) result.push(value);
+                    }
+                }
+
+                for (const element of document.querySelectorAll(
+                    "time[datetime], [data-published-at], [data-published], " +
+                    "[data-date-posted], [data-publication-date]"
+                )) {
+                    const value =
+                        element.getAttribute("datetime") ||
+                        element.getAttribute("data-published-at") ||
+                        element.getAttribute("data-published") ||
+                        element.getAttribute("data-date-posted") ||
+                        element.getAttribute("data-publication-date");
+
+                    if (value) result.push(value);
+                }
+
+                return result;
+            }
+            """
+        )
+
+        for value in values:
+            parsed = _parse_datetime_value(value)
+            if parsed:
+                return parsed
+
+    except Exception:
+        pass
+
+    # -----------------------------------------------------
+    # 3. Tekst strony / dane osadzone w skrypcie
+    # -----------------------------------------------------
+
+    text_patterns = [
+        r"(?:datePosted|datePublished|publishedAt|published_at|publicationDate|publication_date)"
+        r"\s*[\"']?\s*[:=]\s*[\"']([^\"']+)",
+        r"(?:opublikowano|opublikowana|opublikowany|published)"
+        r"\s*[:\-]\s*(\d{1,2}[./-]\d{1,2}[./-]\d{4})",
+    ]
+
+    for pattern in text_patterns:
+        match = re.search(
+            pattern,
+            body_text,
+            re.IGNORECASE,
+        )
+        if match:
+            parsed = _parse_datetime_value(match.group(1))
+            if parsed:
+                return parsed
+
+    return None
+
+
+def _fallback_job_description(lines):
+    """
+    Fallback dla ofert, w których nie występuje
+    jednoznaczny nagłówek sekcji opisu.
+    """
+
+    start_markers = {
+        "oryginalny tekst.",
+        "oryginalny tekst",
+        "original text",
+    }
+
+    end_markers = {
+        "pokaż tłumaczenie",
+        "pokaz tlumaczenie",
+        "pokaż wszystko",
+        "pokaz wszystko",
+        "szczegóły oferty",
+        "szczegoly oferty",
+        "aplikuj",
+        "zapisz ofertę",
+        "zapisz oferte",
+    }
+
+    start_index = None
+
+    for index, line in enumerate(lines):
+        if line.lower().strip() in start_markers:
+            start_index = index + 1
+            break
+
+    if start_index is None:
+        return None
+
+    end_index = len(lines)
+
+    for index in range(start_index, len(lines)):
+        if lines[index].lower().strip() in end_markers:
+            end_index = index
+            break
+
+    description_lines = [
+        line
+        for line in lines[start_index:end_index]
+        if line.strip()
+    ]
+
+    if not description_lines:
+        return None
+
+    return "\n".join(description_lines).strip()
 
 
 def scrape_nofluffjobs_details(page, job):
@@ -765,7 +939,6 @@ def scrape_nofluffjobs_details(page, job):
             timeout=60000,
         )
         page.wait_for_timeout(5000)
-
     except PlaywrightTimeoutError:
         reason = detect_nofluffjobs_block(None, page)
         if reason:
@@ -856,7 +1029,8 @@ def scrape_nofluffjobs_details(page, job):
     )
     salary = find_salary(lines) or job.get("salary")
 
-    published_at, expires_at = _collect_json_ld_dates(page)
+    # published_at pochodzi tylko ze źródeł strony oferty.
+    published_at = _collect_published_date(page, body_text)
 
     job_description = extract_nofluff_section(
         lines,
@@ -867,9 +1041,13 @@ def scrape_nofluffjobs_details(page, job):
         [
             "obowiązkowe", "must have", "wymagania", "requirements",
             "mile widziane", "nice to have", "benefity", "benefits",
-            "o firmie", "about the company",
+            "o firmie", "about the company", "szczegóły oferty",
+            "szczegoly oferty",
         ],
     )
+
+    if not job_description:
+        job_description = _fallback_job_description(lines)
 
     requirements = extract_nofluff_section(
         lines,
@@ -878,7 +1056,8 @@ def scrape_nofluffjobs_details(page, job):
         ],
         [
             "mile widziane", "nice to have", "benefity", "benefits",
-            "o firmie", "about the company",
+            "o firmie", "about the company", "szczegóły oferty",
+            "szczegoly oferty",
         ],
     )
 
@@ -898,8 +1077,22 @@ def scrape_nofluffjobs_details(page, job):
         tech_stack = requirements
 
     expires_text = None
-    if expires_at:
-        expires_text = expires_at.strftime("%Y-%m-%d %H:%M:%S")
+    expires_at = None
+
+    for pattern in (
+        r"oferta\s+ważna\s+do:\s*(\d{1,2}[.]\d{1,2}[.]\d{4})",
+        r"oferta\s+wazna\s+do:\s*(\d{1,2}[.]\d{1,2}[.]\d{4})",
+        r"valid\s+until:\s*(\d{1,2}[.]\d{1,2}[.]\d{4})",
+    ):
+        match = re.search(pattern, body_text, re.IGNORECASE)
+        if not match:
+            continue
+
+        parsed = _parse_datetime_value(match.group(1))
+        if parsed:
+            expires_at = parsed
+            expires_text = match.group(0)
+            break
 
     return {
         "title": title,
@@ -918,6 +1111,3 @@ def scrape_nofluffjobs_details(page, job):
         "expires_text": expires_text,
         "expires_at": expires_at,
     }
-
-
-NO_FLUFF_BASE_URL = NOFLUFFJOBS_BASE_URL
