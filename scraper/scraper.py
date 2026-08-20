@@ -183,12 +183,24 @@ def process_jobs(
     total_stats,
 ):
     """
-    Zapisuje oferty do MySQL.
+    Zapisuje oferty do MySQL i dodaje je do kolejki
+    szczegółów bez duplikowania source_id.
     """
+
+    # Source ID ofert, które już znajdują się
+    # w kolejce szczegółów.
+    queued_detail_ids = {
+        job["source_id"]
+        for job in details_queue
+    }
 
     for job in jobs:
 
         total_stats["seen"] += 1
+
+        # -------------------------------------------------
+        # IGNOROWANE
+        # -------------------------------------------------
 
         if is_ignored_job(
             job["title"],
@@ -204,14 +216,31 @@ def process_jobs(
 
             continue
 
+        # -------------------------------------------------
+        # ZAPIS / AKTUALIZACJA
+        # -------------------------------------------------
+
         result = save_job(
             job
         )
 
         total_stats["saved"] += 1
 
+        # -------------------------------------------------
+        # SZCZEGÓŁY
+        # -------------------------------------------------
+
+        source_id = job[
+            "source_id"
+        ]
+
         if (
-            result["needs_details"]
+            result.get(
+                "needs_details",
+                False,
+            )
+            and source_id
+            not in queued_detail_ids
             and len(details_queue)
             < MAX_DETAILS_PER_RUN
         ):
@@ -220,6 +249,9 @@ def process_jobs(
                 job
             )
 
+            queued_detail_ids.add(
+                source_id
+            )
 
 # =========================================================
 # RETRY SZCZEGÓŁÓW
