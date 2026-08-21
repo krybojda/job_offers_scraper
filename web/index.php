@@ -40,6 +40,7 @@ function formatValue(?string $value): string
 $portal = trim($_GET['portal'] ?? '');
 $search = trim($_GET['search'] ?? '');
 $activeOnly = ($_GET['active'] ?? '') === '1';
+$newOnly = ($_GET['new'] ?? '') === '1';
 
 $where = [];
 $params = [];
@@ -64,6 +65,10 @@ if ($search !== '') {
 
 if ($activeOnly) {
     $where[] = 'is_active = 1';
+}
+
+if ($newOnly) {
+    $where[] = 'first_seen_at >= NOW() - INTERVAL 24 HOUR';
 }
 
 $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
@@ -154,6 +159,7 @@ function queryUrl(array $overrides = []): string
         'search' => $_GET['search'] ?? '',
         'portal' => $_GET['portal'] ?? '',
         'active' => $_GET['active'] ?? '',
+        'new' => $_GET['new'] ?? '',
         'sort' => $_GET['sort'] ?? 'last_seen_at',
         'direction' => $_GET['direction'] ?? 'DESC',
         'per_page' => $_GET['per_page'] ?? 50,
@@ -268,6 +274,10 @@ function pageItems(int $page, int $total): array
                     <input type="checkbox" name="active" value="1" <?= $activeOnly ? 'checked' : '' ?>>
                     Tylko aktywne
                 </label>
+                <label class="checkbox">
+                    <input type="checkbox" name="new" value="1" <?= $newOnly ? 'checked' : '' ?>>
+                    Tylko nowe
+                </label>
                 <button type="submit">Szukaj</button>
                 <a href="index.php" class="reset">Wyczyść</a>
             </form>
@@ -287,6 +297,9 @@ function pageItems(int $page, int $total): array
                 <input type="hidden" name="portal" value="<?= e($portal) ?>">
                 <?php if ($activeOnly): ?>
                     <input type="hidden" name="active" value="1">
+                <?php endif; ?>
+                <?php if ($newOnly): ?>
+                    <input type="hidden" name="new" value="1">
                 <?php endif; ?>
                 <input type="hidden" name="sort" value="<?= e($sort) ?>">
                 <input type="hidden" name="direction" value="<?= e($direction) ?>">
