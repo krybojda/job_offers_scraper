@@ -2,3 +2,9 @@ devops
 devops engineer
 junior devops
 cloud engineer
+finops
+devsecops
+gitops
+administrator
+Administrador it
+Administrador sieci

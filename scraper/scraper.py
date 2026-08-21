@@ -55,11 +55,11 @@ from nofluffjobs import (
 # WŁĄCZANIE / WYŁĄCZANIE PORTALI
 # =========================================================
 
-RUN_JUSTJOIN = False
-RUN_JUSTJOIN_DETAILS = False
+RUN_JUSTJOIN = True
+RUN_JUSTJOIN_DETAILS = True
 
-RUN_PRACUJ = False
-RUN_PRACUJ_DETAILS = False
+RUN_PRACUJ = True
+RUN_PRACUJ_DETAILS = True
 
 RUN_NOFLUFFJOBS = True
 RUN_NOFLUFFJOBS_DETAILS = True
