@@ -451,7 +451,7 @@ def extract_job_from_raw_item(item, keyword):
     if "/job/" not in href and "/job1/" not in href:
         return None
 
-    url = urljoin(NOF_FLUFFJOBS_BASE_URL, href)
+    url = urljoin(NOFLUFFJOBS_BASE_URL, href)
     source_id = generate_source_id(url)
     lines = clean_lines(item.get("cardText") or "")
     if not lines:
