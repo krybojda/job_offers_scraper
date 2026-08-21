@@ -168,11 +168,11 @@ tr:last-child td {
 }
 
 .new-offer td {
-    background: #fff1f1;
+    background-color: #fff5f5 !important;
 }
 
 .new-offer:hover td {
-    background: #ffe7e7;
+    background-color: #ffebeb !important;
 }
 
 .sort-link {
