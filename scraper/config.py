@@ -20,17 +20,24 @@ MAX_DELAY = int(
 
 # Przerwa między stronami szczegółowymi.
 DETAIL_MIN_DELAY = int(
-    os.getenv("DETAIL_MIN_DELAY", "30")
+    os.getenv("DETAIL_MIN_DELAY", "90")
 )
 
 DETAIL_MAX_DELAY = int(
-    os.getenv("DETAIL_MAX_DELAY", "60")
+    os.getenv("DETAIL_MAX_DELAY", "150")
 )
 
 # Maksymalna liczba szczegółów pobieranych
 # w jednym przebiegu.
 MAX_DETAILS_PER_RUN = int(
-    os.getenv("MAX_DETAILS_PER_RUN", "20")
+    os.getenv("MAX_DETAILS_PER_RUN", "5")
+)
+
+# Po wykryciu blokady No Fluff Jobs nie próbujemy ponownie
+# pobierać szczegółów przez ten czas. Stan jest zapisywany
+# w trwałym volume /app/state.
+NOFLUFFJOBS_BLOCK_COOLDOWN = int(
+    os.getenv("NOFLUFFJOBS_BLOCK_COOLDOWN", "21600")
 )
 
 # Po ilu pełnych poprawnych przebiegach

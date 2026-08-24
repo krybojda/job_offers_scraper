@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     work_type VARCHAR(100) DEFAULT NULL,
     experience_level VARCHAR(100) DEFAULT NULL,
     contract_type VARCHAR(255) DEFAULT NULL,
-    salary VARCHAR(255) DEFAULT NULL,
+    salary TEXT DEFAULT NULL,
 
     job_description LONGTEXT DEFAULT NULL,
     tech_stack LONGTEXT DEFAULT NULL,
