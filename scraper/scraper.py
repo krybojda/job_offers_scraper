@@ -11,6 +11,7 @@ from config import (
     DETAIL_MIN_DELAY,
     HEADLESS,
     MAX_DETAILS_PER_RUN,
+    NOFLUFFJOBS_BLOCK_COOLDOWN,
     MAX_DELAY,
     MIN_DELAY,
     MISSED_THRESHOLD,
@@ -59,10 +60,58 @@ RUN_JUSTJOIN = True
 RUN_JUSTJOIN_DETAILS = True
 
 RUN_PRACUJ = True
-RUN_PRACUJ_DETAILS = True
+RUN_PRACUJ_DETAILS = False
 
 RUN_NOFLUFFJOBS = True
 RUN_NOFLUFFJOBS_DETAILS = True
+
+
+# =========================================================
+# STAN BLOKADY NO FLUFF JOBS
+# =========================================================
+
+NOFLUFFJOBS_STATE_FILE = os.path.join(
+    "state",
+    "nofluffjobs_details_state.json",
+)
+
+
+def load_nofluffjobs_block_until():
+    if not os.path.exists(NOFLUFFJOBS_STATE_FILE):
+        return 0
+
+    try:
+        with open(NOFLUFFJOBS_STATE_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        return float(data.get("blocked_until", 0))
+    except Exception as error:
+        print(f"[NO FLUFF JOBS] Nie udało się odczytać stanu blokady: {error}")
+        return 0
+
+
+def save_nofluffjobs_block_until(blocked_until):
+    try:
+        state_directory = os.path.dirname(NOFLUFFJOBS_STATE_FILE)
+        if state_directory:
+            os.makedirs(state_directory, exist_ok=True)
+        with open(NOFLUFFJOBS_STATE_FILE, "w", encoding="utf-8") as file:
+            json.dump({"blocked_until": blocked_until}, file, indent=2)
+    except Exception as error:
+        print(f"[NO FLUFF JOBS] Nie udało się zapisać stanu blokady: {error}")
+
+
+def nofluffjobs_blocked_by_cooldown():
+    blocked_until = load_nofluffjobs_block_until()
+    now = time.time()
+    if blocked_until <= now:
+        return False, 0
+    return True, blocked_until - now
+
+
+def set_nofluffjobs_cooldown():
+    blocked_until = time.time() + NOFLUFFJOBS_BLOCK_COOLDOWN
+    save_nofluffjobs_block_until(blocked_until)
+    return blocked_until
 
 
 # =========================================================
@@ -351,6 +400,15 @@ def retry_details():
                 block_error,
             ) in portals:
 
+                if portal == "nofluffjobs":
+                    in_cooldown, remaining = nofluffjobs_blocked_by_cooldown()
+                    if in_cooldown:
+                        print(
+                            "[NO FLUFF JOBS] SZCZEGÓŁY WSTRZYMANE "
+                            f"przez cooldown. Pozostało około {remaining / 3600:.1f} h."
+                        )
+                        continue
+
                 jobs = get_jobs_without_details(
                     portal=portal,
                     limit=MAX_DETAILS_PER_RUN,
@@ -428,6 +486,13 @@ def retry_details():
                                 total_processed += 1
 
                         except block_error as error:
+
+                            if portal == "nofluffjobs":
+                                blocked_until = set_nofluffjobs_cooldown()
+                                print(
+                                    "[NO FLUFF JOBS] Ustawiono cooldown "
+                                    f"na {NOFLUFFJOBS_BLOCK_COOLDOWN / 3600:.1f} h."
+                                )
 
                             print(
                                 "\n"
@@ -1256,16 +1321,14 @@ def run_scrape():
                 )
 
                 print(
-                    "Ofert do pobrania szczegółów: "
-                    f"{len(pracuj_details_queue)}"
+                    "Szczegóły Pracuj.pl: WYŁĄCZONE"
                 )
 
-                # Celowo pozostawiamy obsługę
-                # przez --retry-details.
-                #
-                # Normalny przebieg nie otwiera
-                # dodatkowych stron, jeżeli nie
-                # ma takiej potrzeby.
+                print(
+                    "Powód: po próbie pobierania szczegółów portal zwrócił HTTP 403. "
+                    "Do czasu wdrożenia bezpiecznego mechanizmu pobierania szczegółów "
+                    "nie wykonujemy żądań do stron ofert w normalnym przebiegu."
+                )
 
             # =================================================
             # SZCZEGÓŁY NO FLUFF JOBS
@@ -1288,108 +1351,154 @@ def run_scrape():
                     "========================================"
                 )
 
-                print(
-                    "Ofert do pobrania szczegółów: "
-                    f"{len(nofluffjobs_details_queue)}"
-                )
+                in_cooldown, remaining = nofluffjobs_blocked_by_cooldown()
+                if in_cooldown:
+                    print(
+                        "[NO FLUFF JOBS] SZCZEGÓŁY WSTRZYMANE "
+                        f"przez cooldown. Pozostało około {remaining / 3600:.1f} h."
+                    )
+                    nofluffjobs_details_queue.clear()
 
-                if nofluffjobs_details_queue:
+                if not in_cooldown:
+                    # Normalny przebieg dodaje do kolejki przede wszystkim
+                    # nowe oferty znalezione podczas bieżącego skanowania.
+                    # Istniały jednak rekordy zapisane wcześniej bez szczegółów,
+                    # które nigdy nie trafiały do tej kolejki. W efekcie backlog
+                    # No Fluff Jobs rósł mimo poprawnie działającego parsera.
+                    # Uzupełniamy kolejkę brakującymi rekordami, ale tylko do
+                    # MAX_DETAILS_PER_RUN, aby nie zwiększać liczby żądań ponad
+                    # ustalony limit i ograniczyć ryzyko blokady portalu.
+                    if len(nofluffjobs_details_queue) < MAX_DETAILS_PER_RUN:
 
-                    detail_context = (
-                        browser.new_context(
-                            user_agent=USER_AGENT,
-                            viewport={
-                                "width": 1440,
-                                "height": 1000,
-                            },
-                            locale="pl-PL",
+                        existing_jobs = get_jobs_without_details(
+                            portal="nofluffjobs",
+                            limit=MAX_DETAILS_PER_RUN,
                         )
-                    )
 
-                    detail_page = (
-                        detail_context.new_page()
-                    )
+                        queued_ids = {
+                            job["source_id"]
+                            for job in nofluffjobs_details_queue
+                        }
 
-                    try:
+                        for job in existing_jobs:
 
-                        for index, job in enumerate(
-                            nofluffjobs_details_queue
-                        ):
+                            if job["source_id"] in queued_ids:
+                                continue
 
-                            if index > 0:
+                            nofluffjobs_details_queue.append(job)
+                            queued_ids.add(job["source_id"])
 
-                                delay = random.uniform(
-                                    DETAIL_MIN_DELAY,
-                                    DETAIL_MAX_DELAY,
-                                )
-
-                                print(
-                                    "\nPrzerwa przed "
-                                    "kolejną ofertą szczegółową: "
-                                    f"{delay:.1f} s"
-                                )
-
-                                time.sleep(
-                                    delay
-                                )
-
-                            try:
-
-                                details = (
-                                    scrape_nofluffjobs_details(
-                                        detail_page,
-                                        job,
-                                    )
-                                )
-
-                                if details is not None:
-
-                                    save_job_details(
-                                        portal=(
-                                            "nofluffjobs"
-                                        ),
-                                        source_id=(
-                                            job[
-                                                "source_id"
-                                            ]
-                                        ),
-                                        details=details,
-                                    )
-
-                            except NoFluffJobsBlockedError as error:
-
-                                print(
-                                    "\n"
-                                    "========================================"
-                                )
-
-                                print(
-                                    "NO FLUFF JOBS "
-                                    "- STOP SZCZEGÓŁÓW"
-                                )
-
-                                print(
-                                    "========================================"
-                                )
-
-                                print(
-                                    f"Powód: {error}"
-                                )
-
+                            if len(nofluffjobs_details_queue) >= MAX_DETAILS_PER_RUN:
                                 break
 
-                            except Exception as error:
+                    print(
+                        "Ofert do pobrania szczegółów: "
+                        f"{len(nofluffjobs_details_queue)}"
+                    )
 
-                                print(
-                                    "[ERROR] "
-                                    "No Fluff Jobs "
-                                    f"szczegóły: {error}"
-                                )
+                    if nofluffjobs_details_queue:
 
-                    finally:
+                        detail_context = (
+                            browser.new_context(
+                                user_agent=USER_AGENT,
+                                viewport={
+                                    "width": 1440,
+                                    "height": 1000,
+                                },
+                                locale="pl-PL",
+                            )
+                        )
 
-                        detail_page.close()
-                        detail_context.close()
+                        detail_page = (
+                            detail_context.new_page()
+                        )
+
+                        try:
+
+                            for index, job in enumerate(
+                                nofluffjobs_details_queue
+                            ):
+
+                                if index > 0:
+
+                                    delay = random.uniform(
+                                        DETAIL_MIN_DELAY,
+                                        DETAIL_MAX_DELAY,
+                                    )
+
+                                    print(
+                                        "\nPrzerwa przed "
+                                        "kolejną ofertą szczegółową: "
+                                        f"{delay:.1f} s"
+                                    )
+
+                                    time.sleep(
+                                        delay
+                                    )
+
+                                try:
+
+                                    details = (
+                                        scrape_nofluffjobs_details(
+                                            detail_page,
+                                            job,
+                                        )
+                                    )
+
+                                    if details is not None:
+
+                                        save_job_details(
+                                            portal=(
+                                                "nofluffjobs"
+                                            ),
+                                            source_id=(
+                                                job[
+                                                    "source_id"
+                                                ]
+                                            ),
+                                            details=details,
+                                        )
+
+                                except NoFluffJobsBlockedError as error:
+
+                                    set_nofluffjobs_cooldown()
+                                    print(
+                                        "[NO FLUFF JOBS] Ustawiono cooldown "
+                                        f"na {NOFLUFFJOBS_BLOCK_COOLDOWN / 3600:.1f} h."
+                                    )
+
+                                    print(
+                                        "\n"
+                                        "========================================"
+                                    )
+
+                                    print(
+                                        "NO FLUFF JOBS "
+                                        "- STOP SZCZEGÓŁÓW"
+                                    )
+
+                                    print(
+                                        "========================================"
+                                    )
+
+                                    print(
+                                        f"Powód: {error}"
+                                    )
+
+                                    break
+
+                                except Exception as error:
+
+                                    print(
+                                        "[ERROR] "
+                                        "No Fluff Jobs "
+                                        f"szczegóły: {error}"
+                                    )
+
+                        finally:
+
+                            detail_page.close()
+                            detail_context.close()
 
             elif RUN_NOFLUFFJOBS:
 
