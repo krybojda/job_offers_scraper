@@ -1288,6 +1288,37 @@ def run_scrape():
                     "========================================"
                 )
 
+                # Normalny przebieg dodaje do kolejki przede wszystkim
+                # nowe oferty znalezione podczas bieżącego skanowania.
+                # Istniały jednak rekordy zapisane wcześniej bez szczegółów,
+                # które nigdy nie trafiały do tej kolejki. W efekcie backlog
+                # No Fluff Jobs rósł mimo poprawnie działającego parsera.
+                # Uzupełniamy kolejkę brakującymi rekordami, ale tylko do
+                # MAX_DETAILS_PER_RUN, aby nie zwiększać liczby żądań ponad
+                # ustalony limit i ograniczyć ryzyko blokady portalu.
+                if len(nofluffjobs_details_queue) < MAX_DETAILS_PER_RUN:
+
+                    existing_jobs = get_jobs_without_details(
+                        portal="nofluffjobs",
+                        limit=MAX_DETAILS_PER_RUN,
+                    )
+
+                    queued_ids = {
+                        job["source_id"]
+                        for job in nofluffjobs_details_queue
+                    }
+
+                    for job in existing_jobs:
+
+                        if job["source_id"] in queued_ids:
+                            continue
+
+                        nofluffjobs_details_queue.append(job)
+                        queued_ids.add(job["source_id"])
+
+                        if len(nofluffjobs_details_queue) >= MAX_DETAILS_PER_RUN:
+                            break
+
                 print(
                     "Ofert do pobrania szczegółów: "
                     f"{len(nofluffjobs_details_queue)}"
