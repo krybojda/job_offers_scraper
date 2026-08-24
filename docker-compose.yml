@@ -16,6 +16,13 @@ services:
       - jobs_mysql_data:/var/lib/mysql
       - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
     networks:
       - jobs-network
 
@@ -35,7 +42,8 @@ services:
       TZ: Europe/Warsaw
 
     depends_on:
-      - mysql
+      mysql:
+        condition: service_healthy
 
     volumes:
       - ./scraper:/app
@@ -62,10 +70,11 @@ services:
       TZ: Europe/Warsaw
 
     depends_on:
-      - mysql
+      mysql:
+        condition: service_healthy
 
     ports:
-      - "8080:80"
+      - "8090:80"
 
     volumes:
       - ./web:/var/www/html
