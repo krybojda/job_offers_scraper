@@ -385,6 +385,8 @@ def retry_details():
         return
 
     total_processed = 0
+    total_requested = 0
+    interrupted = False
 
     with sync_playwright() as playwright:
 
@@ -426,6 +428,8 @@ def retry_details():
                 if not jobs:
 
                     continue
+
+                total_requested += len(jobs)
 
                 context = browser.new_context(
                     user_agent=USER_AGENT,
@@ -516,6 +520,7 @@ def retry_details():
                                 f"Przerywam pobieranie "
                                 f"szczegółów {portal}."
                             )
+                            interrupted = True
 
                             break
 
@@ -539,6 +544,20 @@ def retry_details():
     print(
         "\nPONOWNE POBIERANIE ZAKOŃCZONE"
     )
+    print(
+        f"Zaplanowano: {total_requested} | "
+        f"Przetworzono: {total_processed}"
+    )
+
+    if interrupted or total_processed < total_requested:
+        print(
+            "[RETRY] NIEPEŁNY PRZEBIEG: "
+            "nie wszystkie zaplanowane oferty zostały przetworzone."
+        )
+        return 1
+
+    print("[RETRY] PEŁNY PRZEBIEG: wszystkie zaplanowane oferty przetworzone.")
+    return 0
 
 
 # =========================================================
@@ -1621,9 +1640,7 @@ def main():
 
     if args.retry_details:
 
-        retry_details()
-
-        return
+        return retry_details()
 
     if args.once:
 
@@ -1668,4 +1685,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
