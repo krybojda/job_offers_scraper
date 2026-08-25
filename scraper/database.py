@@ -216,7 +216,8 @@ def save_job_details(
                 about_company = COALESCE(NULLIF(%s, ''), about_company),
                 expires_text = COALESCE(NULLIF(%s, ''), expires_text),
                 expires_at = COALESCE(%s, expires_at),
-                details_scraped_at = NOW()
+                details_scraped_at = NOW(),
+                details_complete = %s
             WHERE portal = %s
               AND source_id = %s
         """
@@ -237,6 +238,10 @@ def save_job_details(
             details.get("about_company"),
             details.get("expires_text"),
             details.get("expires_at"),
+            int(
+                bool(details.get("job_description"))
+                and bool(details.get("tech_stack"))
+            ),
             portal,
             source_id,
         )
@@ -399,7 +404,7 @@ def get_jobs_without_details(
                 published_at
             FROM jobs
             WHERE portal = %s
-              AND details_scraped_at IS NULL
+              AND details_complete = 0
               AND is_active = 1
             ORDER BY id ASC
             LIMIT %s
