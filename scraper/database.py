@@ -404,7 +404,7 @@ def get_jobs_without_details(
                 published_at
             FROM jobs
             WHERE portal = %s
-              AND details_complete = 0
+              AND details_scraped_at IS NULL
               AND is_active = 1
             ORDER BY id ASC
             LIMIT %s

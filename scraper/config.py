@@ -30,7 +30,7 @@ DETAIL_MAX_DELAY = int(
 # Maksymalna liczba szczegółów pobieranych
 # w jednym przebiegu.
 MAX_DETAILS_PER_RUN = int(
-    os.getenv("MAX_DETAILS_PER_RUN", "5")
+    os.getenv("MAX_DETAILS_PER_RUN", "10")
 )
 
 # Po wykryciu blokady No Fluff Jobs nie próbujemy ponownie

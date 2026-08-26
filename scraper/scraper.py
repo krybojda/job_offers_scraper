@@ -1432,6 +1432,8 @@ def run_scrape():
                             detail_context.new_page()
                         )
 
+                        failed_nofluffjobs_details = []
+
                         try:
 
                             for index, job in enumerate(
@@ -1477,6 +1479,8 @@ def run_scrape():
                                             ),
                                             details=details,
                                         )
+                                    else:
+                                        failed_nofluffjobs_details.append(job)
 
                                 except NoFluffJobsBlockedError as error:
 
@@ -1508,11 +1512,81 @@ def run_scrape():
 
                                 except Exception as error:
 
+                                    failed_nofluffjobs_details.append(job)
                                     print(
                                         "[ERROR] "
                                         "No Fluff Jobs "
                                         f"szczegóły: {error}"
                                     )
+
+                            # Jednorazowa próba ofert, dla których pierwszy
+                            # request nie dał żadnych szczegółów. Wykonujemy ją
+                            # dopiero na końcu pierwszej kolejki, aby nie
+                            # przerywać normalnego przebiegu. Nie retry'ujemy
+                            # po blokadzie 403/429/503 - wtedy działa cooldown.
+                            if failed_nofluffjobs_details:
+                                in_cooldown, remaining = nofluffjobs_blocked_by_cooldown()
+                                if not in_cooldown:
+                                    print(
+                                        "\n========================================"
+                                    )
+                                    print(
+                                        "RETRY NIEUDANYCH SZCZEGÓŁÓW NO FLUFF JOBS"
+                                    )
+                                    print(
+                                        "========================================"
+                                    )
+                                    print(
+                                        "Ofert do ponownej próby: "
+                                        f"{len(failed_nofluffjobs_details)}"
+                                    )
+
+                                    for retry_index, job in enumerate(
+                                        failed_nofluffjobs_details
+                                    ):
+                                        delay = random.uniform(
+                                            DETAIL_MIN_DELAY,
+                                            DETAIL_MAX_DELAY,
+                                        )
+                                        print(
+                                            "\nPrzerwa przed retry szczegółów: "
+                                            f"{delay:.1f} s"
+                                        )
+                                        time.sleep(delay)
+
+                                        try:
+                                            details = scrape_nofluffjobs_details(
+                                                detail_page,
+                                                job,
+                                            )
+                                            if details is not None:
+                                                save_job_details(
+                                                    portal="nofluffjobs",
+                                                    source_id=job["source_id"],
+                                                    details=details,
+                                                )
+                                                print(
+                                                    "[RETRY] Szczegóły zapisano: "
+                                                    f"{job['source_id']}"
+                                                )
+                                            else:
+                                                print(
+                                                    "[RETRY] Brak danych szczegółowych: "
+                                                    f"{job['source_id']}"
+                                                )
+                                        except NoFluffJobsBlockedError as error:
+                                            set_nofluffjobs_cooldown()
+                                            print(
+                                                "[NO FLUFF JOBS] Retry wykrył blokadę. "
+                                                f"Cooldown: {NOFLUFFJOBS_BLOCK_COOLDOWN / 3600:.1f} h."
+                                            )
+                                            print(f"Powód: {error}")
+                                            break
+                                        except Exception as error:
+                                            print(
+                                                "[RETRY] Błąd szczegółów No Fluff Jobs: "
+                                                f"{error}"
+                                            )
 
                         finally:
 
