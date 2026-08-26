@@ -215,18 +215,25 @@ def find_work_mode(lines):
         ):
             return "Remote"
 
+    # Fallback na podstawie rozpoznanej lokalizacji
+    for line in lines:
+        value = clean_text(line)
+        if value and is_location_line(value):
+            norm = value.lower().strip()
+            if "remote" in norm or "zdalnie" in norm:
+                return "Remote"
+            elif "+" in norm or "locations" in norm:
+                return "Hybrid"
+            else:
+                return "Office"
+
     return None
 
 
 def find_work_type(lines, title=None):
     """
     Próbuje rozpoznać typ zatrudnienia / wymiar pracy.
-
-    No Fluff Jobs nie pokazuje tego pola identycznie
-    dla każdej oferty, dlatego sprawdzamy zarówno
-    polskie, jak i angielskie warianty.
     """
-
     text = " ".join(lines)
     if title:
         text += " " + title
@@ -234,16 +241,22 @@ def find_work_type(lines, title=None):
     normalized = text.lower()
 
     if re.search(
-        r"\b(full[- ]?time|pełny etat|pełnym etacie)\b",
+        r"\b(full[- ]?time|pełny etat|pelny etat|pełnym etacie|pelnym etacie|cały etat|caly etat)\b",
         normalized,
     ):
-        return "Full-time"
+        return "Pełny etat"
 
     if re.search(
-        r"\b(part[- ]?time|część etatu|część[- ]?etatu)\b",
+        r"\b(part[- ]?time|część etatu|czesc etatu|część[- ]?etatu|pół etatu|pol etatu)\b",
         normalized,
     ):
-        return "Part-time"
+        return "Część etatu"
+
+    if re.search(
+        r"\b(staż|staz|praktyka|praktyki|internship|intern)\b",
+        normalized,
+    ):
+        return "Staż / Praktyka"
 
     if re.search(
         r"\b(freelance|freelancer)\b",
@@ -251,13 +264,7 @@ def find_work_type(lines, title=None):
     ):
         return "Freelance"
 
-    if re.search(
-        r"\b(b2b contract|kontrakt b2b)\b",
-        normalized,
-    ):
-        return "B2B"
-
-    return None
+    return "Pełny etat"
 
 
 def find_experience_level(title, lines):
@@ -318,20 +325,36 @@ def find_contract_type(lines):
         "uop" in text
         or "uop brutto" in text
         or "umowa o pracę" in text
+        or "umowę o pracę" in text
         or "umowa o prace" in text
+        or "employment contract" in text
+        or "permanent" in text
     ):
         found.append("Umowa o pracę")
 
-    if "umowa zlecenie" in text:
+    if (
+        "uz" in text
+        or "umowa zlecenie" in text
+        or "umowę zlecenie" in text
+        or "mandate contract" in text
+    ):
         found.append("Umowa zlecenie")
 
-    if "umowa o dzieło" in text:
+    if "uod" in text or "umowa o dzieło" in text or "umowę o dzieło" in text:
         found.append("Umowa o dzieło")
 
     if "freelance" in text:
         found.append("Freelance")
 
-    return ", ".join(dict.fromkeys(found)) or None
+    # Fallback stawek godzinowych i dziennych na B2B
+    if not found:
+        if re.search(r"/\s*(?:godz|h|dzień|dzien|day)\b", text, re.IGNORECASE):
+            found.append("B2B")
+
+    if not found:
+        return None
+
+    return ", ".join(dict.fromkeys(found))
 
 
 def normalize_title(title):
@@ -1016,21 +1039,74 @@ def scrape_nofluffjobs_details(page, job):
             company = clean_text(match.group(1))
             break
 
+    # -----------------------------------------------------
+    # POBIERZ DANE ZE STRUKTURY JSON-LD
+    # -----------------------------------------------------
+    ld_job_posting = None
+    try:
+        scripts = page.locator("script[type='application/ld+json']").all_inner_texts()
+        for script_text in scripts:
+            try:
+                data = json.loads(script_text)
+                if isinstance(data, dict):
+                    if "@graph" in data:
+                        for g in data["@graph"]:
+                            if isinstance(g, dict) and g.get("@type") == "JobPosting":
+                                ld_job_posting = g
+                                break
+                    elif data.get("@type") == "JobPosting":
+                        ld_job_posting = data
+                        break
+                elif isinstance(data, list):
+                    for g in data:
+                        if isinstance(g, dict) and g.get("@type") == "JobPosting":
+                            ld_job_posting = g
+                            break
+                if ld_job_posting:
+                    break
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    if ld_job_posting:
+        if not company:
+            hiring_org = ld_job_posting.get("hiringOrganization")
+            if isinstance(hiring_org, dict) and hiring_org.get("name"):
+                company = clean_text(hiring_org["name"])
+
     location = find_location(lines) or job.get("location")
     work_mode = find_work_mode(lines) or job.get("work_mode")
     work_type = find_work_type(lines, title) or job.get("work_type")
-    experience_level = (
-        find_experience_level(title, lines)
-        or job.get("experience_level")
-    )
-    contract_type = (
-        find_contract_type(lines)
-        or job.get("contract_type")
-    )
+
+    experience_level = None
+    if ld_job_posting:
+        exp_req = ld_job_posting.get("experienceRequirements")
+        if isinstance(exp_req, dict) and exp_req.get("description"):
+            experience_level = clean_text(exp_req["description"])
+    if not experience_level:
+        experience_level = find_experience_level(title, lines) or job.get("experience_level")
+
+    contract_type = None
+    if ld_job_posting:
+        emp_type = ld_job_posting.get("employmentType")
+        if emp_type:
+            emp_str = str(emp_type).upper()
+            if "CONTRACTOR" in emp_str or "CONTRACT" in emp_str:
+                contract_type = "B2B"
+            elif any(k in emp_str for k in ("FULL_TIME", "EMPLOYEE", "PERMANENT")):
+                contract_type = "Umowa o pracę"
+    if not contract_type:
+        contract_type = find_contract_type(lines) or job.get("contract_type")
+
     salary = find_salary(lines) or job.get("salary")
 
-    # published_at pochodzi tylko ze źródeł strony oferty.
-    published_at = _collect_published_date(page, body_text)
+    # published_at pochodzi ze Schema.org JobPosting lub źródeł strony
+    published_at = None
+    if ld_job_posting and ld_job_posting.get("datePosted"):
+        published_at = _parse_datetime_value(ld_job_posting["datePosted"])
+    if not published_at:
+        published_at = _collect_published_date(page, body_text)
 
     job_description = extract_nofluff_section(
         lines,
