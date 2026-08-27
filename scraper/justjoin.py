@@ -961,18 +961,26 @@ def extract_job_from_raw_item(
     # FIRMA
     # -----------------------------------------------------
 
-    company = None
+    company = clean_text(item.get("company"))
 
-    if lines:
-
-        candidate = lines[0]
-
-        if (
-            candidate
-            and candidate != title
-        ):
-
+    if not company and lines:
+        badge_words = {
+            "super offer", "new", "1-click apply", "live status", "nowość", "nowosc", "locations", "location"
+        }
+        for line in lines:
+            candidate = clean_text(line)
+            if not candidate:
+                continue
+            if candidate.lower() in badge_words:
+                continue
+            if candidate == title or (title and candidate.lower() == title.lower()):
+                continue
+            if candidate.lower() in {"remote", "hybrid", "office"}:
+                continue
+            if re.search(r"(?:zł|zl|pln|eur|usd|gbp|chf|undisclosed)", candidate, re.IGNORECASE):
+                continue
             company = candidate
+            break
 
     # -----------------------------------------------------
     # DANE Z LISTY
@@ -1207,9 +1215,14 @@ def scrape_justjoin_page(
                             )
                             .filter(Boolean);
 
+                        const logoImg = card.querySelector("img[alt]");
+                        const companyFromImg = logoImg ? (logoImg.getAttribute("alt") || "").trim() : "";
+
                         return {
                             href:
                                 href || "",
+                            company:
+                                companyFromImg,
                             linkText:
                                 (
                                     link.innerText
