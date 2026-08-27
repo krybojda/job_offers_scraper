@@ -962,10 +962,10 @@ def scrape_nofluffjobs_details(page, job):
     try:
         response = page.goto(
             url,
-            wait_until="domcontentloaded",
+            wait_until="networkidle",
             timeout=60000,
         )
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(1000)
     except PlaywrightTimeoutError:
         reason = detect_nofluffjobs_block(None, page)
         if reason:
