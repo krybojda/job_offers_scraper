@@ -1079,10 +1079,9 @@ def scrape_nofluffjobs_details(page, job):
         pass
 
     if ld_job_posting:
-        if not company:
-            hiring_org = ld_job_posting.get("hiringOrganization")
-            if isinstance(hiring_org, dict) and hiring_org.get("name"):
-                company = clean_text(hiring_org["name"])
+        hiring_org = ld_job_posting.get("hiringOrganization")
+        if isinstance(hiring_org, dict) and hiring_org.get("name"):
+            company = clean_text(hiring_org["name"])
 
     location = find_location(lines) or job.get("location")
     work_mode = find_work_mode(lines) or job.get("work_mode")
