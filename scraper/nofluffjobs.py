@@ -272,9 +272,9 @@ def find_experience_level(title, lines):
 
     explicit_patterns = [
         r"(?:poziom|level|experience level)\s*[:\-]?\s*"
-        r"(junior|mid|middle|regular|senior|expert|lead)",
+        r"(trainee|junior|mid|middle|regular|senior|expert|lead)",
         r"(?:seniority|doświadczenie)\s*[:\-]?\s*"
-        r"(junior|mid|middle|regular|senior|expert|lead)",
+        r"(trainee|stażysta|junior|mid|middle|regular|senior|expert|lead)",
     ]
 
     for pattern in explicit_patterns:
@@ -282,6 +282,8 @@ def find_experience_level(title, lines):
         if match:
             value = match.group(1).lower()
             return {
+                "trainee": "Trainee",
+                "stażysta": "Trainee",
                 "junior": "Junior",
                 "mid": "Mid",
                 "middle": "Mid",
@@ -294,6 +296,8 @@ def find_experience_level(title, lines):
     title_text = (title or "").lower()
     found = []
 
+    if re.search(r"\btrainee\b|\bsta[żz]ysta\b|\bintern\b", title_text, re.IGNORECASE):
+        found.append("Trainee")
     if re.search(r"\bjunior\b", title_text):
         found.append("Junior")
     if re.search(r"\bmid\b", title_text):
@@ -1044,28 +1048,33 @@ def scrape_nofluffjobs_details(page, job):
     # -----------------------------------------------------
     ld_job_posting = None
     try:
-        scripts = page.locator("script[type='application/ld+json']").all_inner_texts()
-        for script_text in scripts:
-            try:
-                data = json.loads(script_text)
-                if isinstance(data, dict):
-                    if "@graph" in data:
-                        for g in data["@graph"]:
+        def _find_job_posting_in_ld(scripts_texts):
+            for script_text in scripts_texts:
+                try:
+                    data = json.loads(script_text)
+                    if isinstance(data, dict):
+                        if "@graph" in data:
+                            for g in data["@graph"]:
+                                if isinstance(g, dict) and g.get("@type") == "JobPosting":
+                                    return g
+                        elif data.get("@type") == "JobPosting":
+                            return data
+                    elif isinstance(data, list):
+                        for g in data:
                             if isinstance(g, dict) and g.get("@type") == "JobPosting":
-                                ld_job_posting = g
-                                break
-                    elif data.get("@type") == "JobPosting":
-                        ld_job_posting = data
-                        break
-                elif isinstance(data, list):
-                    for g in data:
-                        if isinstance(g, dict) and g.get("@type") == "JobPosting":
-                            ld_job_posting = g
-                            break
-                if ld_job_posting:
-                    break
-            except Exception:
-                continue
+                                return g
+                except Exception:
+                    continue
+            return None
+
+        # Retry up to 3 times — JSON-LD with JobPosting may load after domcontentloaded
+        for _attempt in range(3):
+            scripts = page.locator("script[type='application/ld+json']").all_inner_texts()
+            ld_job_posting = _find_job_posting_in_ld(scripts)
+            if ld_job_posting:
+                break
+            if _attempt < 2:
+                page.wait_for_timeout(2000)
     except Exception:
         pass
 
