@@ -925,6 +925,66 @@ def _fallback_job_description(lines):
     return "\n".join(description_lines).strip()
 
 
+def _extract_ld_location(job_posting):
+    """Zwraca czytelną lokalizację z JobPosting JSON-LD."""
+    value = job_posting.get("jobLocation") if isinstance(job_posting, dict) else None
+    if not value:
+        return None
+
+    locations = value if isinstance(value, list) else [value]
+    result = []
+
+    for location in locations:
+        if not isinstance(location, dict):
+            continue
+        address = location.get("address")
+        if isinstance(address, str):
+            text = clean_text(address)
+        elif isinstance(address, dict):
+            parts = []
+            for key in ("streetAddress", "addressLocality", "addressRegion", "postalCode", "addressCountry"):
+                part = address.get(key)
+                if isinstance(part, dict):
+                    part = part.get("name") or part.get("value")
+                if part:
+                    parts.append(clean_text(part))
+            text = ", ".join(dict.fromkeys(parts))
+        else:
+            text = None
+
+        if text and text not in result:
+            result.append(text)
+
+    return ", ".join(result) if result else None
+
+
+def _extract_ld_work_mode(job_posting):
+    """Mapuje JobPosting JSON-LD na nasz format work_mode."""
+    if not isinstance(job_posting, dict):
+        return None
+
+    value = job_posting.get("jobLocationType")
+    if isinstance(value, str) and value.upper() == "TELECOMMUTE":
+        return "Remote"
+    return None
+
+
+def _extract_ld_work_type(job_posting):
+    """Mapuje employmentType z JSON-LD na wymiar pracy."""
+    if not isinstance(job_posting, dict):
+        return None
+
+    value = job_posting.get("employmentType")
+    values = value if isinstance(value, list) else [value]
+    normalized = {str(item).upper() for item in values if item}
+
+    if "PART_TIME" in normalized:
+        return "Część etatu"
+    if "FULL_TIME" in normalized:
+        return "Pełny etat"
+    return None
+
+
 def scrape_nofluffjobs_details(page, job):
     url = job["url"]
 
@@ -1016,17 +1076,83 @@ def scrape_nofluffjobs_details(page, job):
             company = clean_text(match.group(1))
             break
 
-    location = find_location(lines) or job.get("location")
-    work_mode = find_work_mode(lines) or job.get("work_mode")
-    work_type = find_work_type(lines, title) or job.get("work_type")
-    experience_level = (
-        find_experience_level(title, lines)
-        or job.get("experience_level")
+    # -----------------------------------------------------
+    # POBIERZ DANE ZE STRUKTURY JSON-LD
+    # -----------------------------------------------------
+    ld_job_posting = None
+    try:
+        def _find_job_posting_in_ld(scripts_texts):
+            for script_text in scripts_texts:
+                try:
+                    data = json.loads(script_text)
+                    if isinstance(data, dict):
+                        if "@graph" in data:
+                            for g in data["@graph"]:
+                                if isinstance(g, dict) and g.get("@type") == "JobPosting":
+                                    return g
+                        elif data.get("@type") == "JobPosting":
+                            return data
+                    elif isinstance(data, list):
+                        for g in data:
+                            if isinstance(g, dict) and g.get("@type") == "JobPosting":
+                                return g
+                except Exception:
+                    continue
+            return None
+
+        # Retry up to 3 times — JSON-LD with JobPosting may load after domcontentloaded
+        for _attempt in range(3):
+            scripts = page.locator("script[type='application/ld+json']").all_inner_texts()
+            ld_job_posting = _find_job_posting_in_ld(scripts)
+            if ld_job_posting:
+                break
+            if _attempt < 2:
+                page.wait_for_timeout(2000)
+    except Exception:
+        pass
+
+    if ld_job_posting:
+        hiring_org = ld_job_posting.get("hiringOrganization")
+        if isinstance(hiring_org, dict) and hiring_org.get("name"):
+            company = clean_text(hiring_org["name"])
+
+    location = (
+        find_location(lines)
+        or _extract_ld_location(ld_job_posting)
+        or job.get("location")
     )
-    contract_type = (
-        find_contract_type(lines)
-        or job.get("contract_type")
+    work_mode = (
+        find_work_mode(lines)
+        or _extract_ld_work_mode(ld_job_posting)
+        or job.get("work_mode")
     )
+    work_type = (
+        find_work_type(lines, title)
+        or _extract_ld_work_type(ld_job_posting)
+        or job.get("work_type")
+    )
+
+    experience_level = None
+    if ld_job_posting:
+        exp_req = ld_job_posting.get("experienceRequirements")
+        if isinstance(exp_req, dict) and exp_req.get("description"):
+            experience_level = clean_text(exp_req["description"])
+    if not experience_level:
+        experience_level = find_experience_level(title, lines) or job.get("experience_level")
+
+    contract_type = None
+    if ld_job_posting:
+        emp_type = ld_job_posting.get("employmentType")
+        if emp_type:
+            emp_str = str(emp_type).upper()
+            if "CONTRACTOR" in emp_str or "CONTRACT" in emp_str:
+                contract_type = "B2B"
+            elif any(k in emp_str for k in ("FULL_TIME", "EMPLOYEE", "PERMANENT")):
+                contract_type = "Umowa o pracę"
+    if not contract_type:
+        contract_type = find_contract_type(lines) or job.get("contract_type")
+
+
     salary = find_salary(lines) or job.get("salary")
 
     # published_at pochodzi tylko ze źródeł strony oferty.
@@ -1078,6 +1204,11 @@ def scrape_nofluffjobs_details(page, job):
 
     expires_text = None
     expires_at = None
+
+    if ld_job_posting and ld_job_posting.get("validThrough"):
+        expires_at = _parse_datetime_value(ld_job_posting["validThrough"])
+        if expires_at:
+            expires_text = str(ld_job_posting["validThrough"])
 
     for pattern in (
         r"oferta\s+ważna\s+do:\s*(\d{1,2}[.]\d{1,2}[.]\d{4})",
