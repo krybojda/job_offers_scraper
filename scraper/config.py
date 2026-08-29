@@ -43,7 +43,7 @@ NOFLUFFJOBS_BLOCK_COOLDOWN = int(
 # Po ilu pełnych poprawnych przebiegach
 # oferta staje się nieaktywna.
 MISSED_THRESHOLD = int(
-    os.getenv("MISSED_THRESHOLD", "3")
+    os.getenv("MISSED_THRESHOLD", "4")
 )
 
 

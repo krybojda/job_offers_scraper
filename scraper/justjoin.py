@@ -103,19 +103,13 @@ def detect_portal_block(
 
 def clean_location(lines):
     """
-    Wyciąga lokalizację z karty wyników.
+    Wyciąga lokalizację z karty wyników Just Join IT.
     """
+    if not lines:
+        return None
 
-    # -----------------------------------------------------
-    # Warszawa
-    # , +4
-    # Locations
-    # -----------------------------------------------------
-
-    for index in range(
-        len(lines)
-    ):
-
+    # Przypadek 1: Miasto, +X Locations
+    for index in range(len(lines)):
         if index + 1 >= len(lines):
             break
 
@@ -126,44 +120,45 @@ def clean_location(lines):
             continue
 
         if next_line.startswith(","):
-
-            location = (
-                f"{current}{next_line}"
-            )
-
+            location = f"{current}{next_line}"
             if (
                 index + 2 < len(lines)
-                and lines[index + 2].lower()
-                in {
-                    "location",
-                    "locations",
-                }
+                and lines[index + 2].lower() in {"location", "locations"}
             ):
-
-                location += (
-                    f" {lines[index + 2]}"
-                )
-
+                location += f" {lines[index + 2]}"
             return location
 
-    # -----------------------------------------------------
-    # Warszawa
-    # Locations
-    # -----------------------------------------------------
-
-    for index in range(
-        len(lines) - 1
-    ):
-
-        if (
-            lines[index + 1].lower()
-            in {
-                "location",
-                "locations",
-            }
-        ):
-
+    # Przypadek 2: Miasto przed "Locations"
+    for index in range(len(lines) - 1):
+        if lines[index + 1].lower() in {"location", "locations"}:
             return lines[index]
+
+    # Przypadek 3: Linia przed wskaźnikiem trybu pracy (Hybrid / Remote / Office)
+    for index, line in enumerate(lines):
+        normalized = line.lower().strip()
+        if normalized in {"hybrid", "office", "remote"}:
+            if index > 0:
+                candidate = lines[index - 1].strip()
+                if candidate and candidate.lower() not in {
+                    "new", "super offer", "1-click apply", "live status", "locations", "location"
+                }:
+                    return candidate
+
+    # Przypadek 4: Typowe miasta
+    city_pattern = re.compile(
+        r"("
+        r"Warszawa|Warsaw|Kraków|Krakow|Wrocław|Wroclaw|Poznań|Poznan|"
+        r"Gdańsk|Gdansk|Gdynia|Sopot|Katowice|Łódź|Lodz|Lublin|Białystok|"
+        r"Rzeszów|Rzeszow|Bydgoszcz|Szczecin|Gliwice|Toruń|Torun|Kielce|"
+        r"Zielona Góra|Bielsko-Biała|Opole|Częstochowa|Radom|Olsztyn|"
+        r"Zurich|Zürich|Geneva|London|Berlin|Prague"
+        r")",
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+        if city_pattern.search(line):
+            return line
 
     return None
 
@@ -868,32 +863,20 @@ def build_justjoin_url(
     """
     Buduje URL wyszukiwania Just Join IT.
     """
-
     normalized = keyword.strip()
-
-    # Pojedyncze słowo.
+    encoded = quote(normalized)
 
     if " " not in normalized:
-
-        slug = quote(
-            normalized.lower()
-        )
-
+        slug = quote(normalized.lower())
         return (
             f"{JUSTJOIN_BASE_URL}/"
             f"job-offers/all-locations/"
             f"{slug}"
         )
 
-    # Fraza.
-
-    encoded = quote(
-        normalized
-    )
-
     return (
         f"{JUSTJOIN_BASE_URL}/"
-        f"job-offers/all-locations/devops"
+        f"job-offers/all-locations"
         f"?q={encoded}%40keyword"
     )
 
@@ -978,18 +961,26 @@ def extract_job_from_raw_item(
     # FIRMA
     # -----------------------------------------------------
 
-    company = None
+    company = clean_text(item.get("company"))
 
-    if lines:
-
-        candidate = lines[0]
-
-        if (
-            candidate
-            and candidate != title
-        ):
-
+    if not company and lines:
+        badge_words = {
+            "super offer", "new", "1-click apply", "live status", "nowość", "nowosc", "locations", "location"
+        }
+        for line in lines:
+            candidate = clean_text(line)
+            if not candidate:
+                continue
+            if candidate.lower() in badge_words:
+                continue
+            if candidate == title or (title and candidate.lower() == title.lower()):
+                continue
+            if candidate.lower() in {"remote", "hybrid", "office"}:
+                continue
+            if re.search(r"(?:zł|zl|pln|eur|usd|gbp|chf|undisclosed)", candidate, re.IGNORECASE):
+                continue
             company = candidate
+            break
 
     # -----------------------------------------------------
     # DANE Z LISTY
@@ -1031,6 +1022,8 @@ def extract_job_from_raw_item(
         "location": location,
         "work_mode": work_mode,
         "work_type": work_type,
+        "experience_level": experience_level,
+        "contract_type": contract_type,
         "salary": salary,
         "url": url,
         "keyword": keyword,
@@ -1174,83 +1167,93 @@ def scrape_justjoin_page(
         return [], False
 
     # -----------------------------------------------------
-    # POBIERZ DOM
+    # POBIERZ DOM Z PRZEWIJANIEM WIRTUALNEJ LISTY
     # -----------------------------------------------------
 
-    raw_jobs = page.evaluate(
-        """
-        () => {
+    raw_jobs_by_href = {}
 
-            const links = Array.from(
-                document.querySelectorAll(
-                    "a[href*='/job-offer/']"
-                )
-            );
+    for _ in range(6):
+        batch = page.evaluate(
+            """
+            () => {
+                const links = Array.from(
+                    document.querySelectorAll(
+                        "a[href*='/job-offer/']"
+                    )
+                );
 
-            return links
-                .map((link) => {
+                return links
+                    .map((link) => {
+                        const href =
+                            link.getAttribute(
+                                "href"
+                            );
 
-                    const href =
-                        link.getAttribute(
-                            "href"
-                        );
+                        const card =
+                            link.closest(
+                                "article"
+                            ) ||
+                            link.closest("li") ||
+                            link.parentElement;
 
-                    const card =
-                        link.closest(
-                            "article"
-                        ) ||
-                        link.closest("li") ||
-                        link.parentElement;
+                        if (!card) {
+                            return null;
+                        }
 
-                    if (!card) {
-                        return null;
-                    }
-
-                    const headings =
-                        Array.from(
-                            card.querySelectorAll(
-                                "h1, h2, h3, h4"
+                        const headings =
+                            Array.from(
+                                card.querySelectorAll(
+                                    "h1, h2, h3, h4"
+                                )
                             )
-                        )
-                        .map(
-                            (element) =>
+                            .map(
+                                (element) =>
+                                    (
+                                        element.innerText
+                                        || ""
+                                    ).trim()
+                            )
+                            .filter(Boolean);
+
+                        const logoImg = card.querySelector("img[alt]");
+                        const companyFromImg = logoImg ? (logoImg.getAttribute("alt") || "").trim() : "";
+
+                        return {
+                            href:
+                                href || "",
+                            company:
+                                companyFromImg,
+                            linkText:
                                 (
-                                    element.innerText
+                                    link.innerText
+                                    || ""
+                                ).trim(),
+                            linkTitle:
+                                link.getAttribute(
+                                    "title"
+                                ) || "",
+                            headings:
+                                headings,
+                            cardText:
+                                (
+                                    card.innerText
                                     || ""
                                 ).trim()
-                        )
-                        .filter(Boolean);
+                        };
+                    })
+                    .filter(Boolean);
+            }
+            """
+        )
 
-                    return {
+        for item in batch:
+            if item.get("href") and item["href"] not in raw_jobs_by_href:
+                raw_jobs_by_href[item["href"]] = item
 
-                        href:
-                            href || "",
+        page.evaluate("window.scrollBy(0, 1200)")
+        page.wait_for_timeout(1000)
 
-                        linkText:
-                            (
-                                link.innerText
-                                || ""
-                            ).trim(),
-
-                        linkTitle:
-                            link.getAttribute(
-                                "title"
-                            ) || "",
-
-                        headings:
-                            headings,
-
-                        cardText:
-                            (
-                                card.innerText
-                                || ""
-                            ).trim()
-                    };
-                })
-                .filter(Boolean);
-        }
-        """
-    )
+    raw_jobs = list(raw_jobs_by_href.values())
 
     print(
         "Znaleziono elementów "

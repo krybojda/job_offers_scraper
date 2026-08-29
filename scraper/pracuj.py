@@ -636,6 +636,9 @@ def extract_job_from_raw_item(
     if ",oferta," not in href.lower():
         return None
 
+    if "projekt-grant" in href.lower() or "button-add-announcement" in href.lower():
+        return None
+
     url = urljoin(
         PRACUJ_BASE_URL,
         href,
@@ -661,7 +664,7 @@ def extract_job_from_raw_item(
         item
     )
 
-    if not title:
+    if not title or title.lower() in {"sprawdź!", "sprawdz!", "aplikuj", "aplikuj szybko", "superoferta", "nowość", "nowosc"}:
         return None
 
     # -----------------------------------------------------
@@ -673,30 +676,24 @@ def extract_job_from_raw_item(
     )
 
     if not company:
-
         # Awaryjny fallback.
         title_index = None
 
         for index, line in enumerate(lines):
-
             if (
                 line.strip()
                 == title.strip()
             ):
-
                 title_index = index
                 break
 
         if title_index is not None:
-
             for candidate in lines[
                 title_index + 1:
             ]:
-
                 candidate = clean_text(
                     candidate
                 )
-
                 if not candidate:
                     continue
 
@@ -704,21 +701,27 @@ def extract_job_from_raw_item(
                     continue
 
                 if re.search(
-                    r"\d[\d\s.,]*"
-                    r"\s*[–-]\s*"
-                    r"\d[\d\s.,]*"
-                    r"\s*"
-                    r"(zł|zl|pln|eur|usd|gbp|chf)",
+                    r"\d[\d\s.,]*\s*(?:[–-]\s*\d[\d\s.,]*)?\s*(?:zł|zl|pln|eur|usd|gbp|chf)",
                     candidate,
                     re.IGNORECASE,
                 ):
+                    continue
+
+                if re.search(r"/\s*(?:godz|mies|m-c|rok|h|month|day)", candidate, re.IGNORECASE):
                     continue
 
                 if candidate.lower() in {
                     "superoferta",
                     "aplikuj szybko",
                     "oferta wygasa",
+                    "sprawdź profil firmy",
+                    "sprawdz profil firmy",
+                    "nowość",
+                    "nowosc",
                 }:
+                    continue
+
+                if re.search(r"^\d+\s+lokalizacj[ei]", candidate, re.IGNORECASE):
                     continue
 
                 company = candidate
@@ -910,8 +913,9 @@ def scrape_pracuj_page(
     try:
 
         page.locator(
-            "a[href*=',oferta,']"
+            "[data-test='link-offer-title'], [data-test='default-offer'], [data-test='positioned-offer'], a[href*=',oferta,']"
         ).first.wait_for(
+            state="attached",
             timeout=30000
         )
 
@@ -985,6 +989,7 @@ def scrape_pracuj_page(
                     */
 
                     const companyLink =
+                        card.querySelector("[data-test='link-company-profile']") ||
                         Array.from(
                             card.querySelectorAll(
                                 "a"
@@ -1000,6 +1005,8 @@ def scrape_pracuj_page(
                                     "pracodawcy.pracuj.pl"
                                 )
                         );
+                    const companyLogoImg = card.querySelector("img[data-test='image-company-logo'], picture img");
+                    const companyName = companyLink ? (companyLink.innerText || "").trim() : (companyLogoImg ? (companyLogoImg.getAttribute("alt") || "").trim() : "");
 
                     /*
                     * Nagłówki znajdujące się
@@ -1033,12 +1040,7 @@ def scrape_pracuj_page(
                             ).trim(),
 
                         company:
-                            companyLink
-                                ? (
-                                    companyLink.innerText
-                                    || ""
-                                ).trim()
-                                : "",
+                            companyName,
 
                         headings:
                             headings,

@@ -215,18 +215,25 @@ def find_work_mode(lines):
         ):
             return "Remote"
 
+    # Fallback na podstawie rozpoznanej lokalizacji
+    for line in lines:
+        value = clean_text(line)
+        if value and is_location_line(value):
+            norm = value.lower().strip()
+            if "remote" in norm or "zdalnie" in norm:
+                return "Remote"
+            elif "+" in norm or "locations" in norm:
+                return "Hybrid"
+            else:
+                return "Office"
+
     return None
 
 
 def find_work_type(lines, title=None):
     """
     Próbuje rozpoznać typ zatrudnienia / wymiar pracy.
-
-    No Fluff Jobs nie pokazuje tego pola identycznie
-    dla każdej oferty, dlatego sprawdzamy zarówno
-    polskie, jak i angielskie warianty.
     """
-
     text = " ".join(lines)
     if title:
         text += " " + title
@@ -234,16 +241,22 @@ def find_work_type(lines, title=None):
     normalized = text.lower()
 
     if re.search(
-        r"\b(full[- ]?time|pełny etat|pełnym etacie)\b",
+        r"\b(full[- ]?time|pełny etat|pelny etat|pełnym etacie|pelnym etacie|cały etat|caly etat)\b",
         normalized,
     ):
-        return "Full-time"
+        return "Pełny etat"
 
     if re.search(
-        r"\b(part[- ]?time|część etatu|część[- ]?etatu)\b",
+        r"\b(part[- ]?time|część etatu|czesc etatu|część[- ]?etatu|pół etatu|pol etatu)\b",
         normalized,
     ):
-        return "Part-time"
+        return "Część etatu"
+
+    if re.search(
+        r"\b(staż|staz|praktyka|praktyki|internship|intern)\b",
+        normalized,
+    ):
+        return "Staż / Praktyka"
 
     if re.search(
         r"\b(freelance|freelancer)\b",
@@ -251,13 +264,7 @@ def find_work_type(lines, title=None):
     ):
         return "Freelance"
 
-    if re.search(
-        r"\b(b2b contract|kontrakt b2b)\b",
-        normalized,
-    ):
-        return "B2B"
-
-    return None
+    return "Pełny etat"
 
 
 def find_experience_level(title, lines):
@@ -265,9 +272,9 @@ def find_experience_level(title, lines):
 
     explicit_patterns = [
         r"(?:poziom|level|experience level)\s*[:\-]?\s*"
-        r"(junior|mid|middle|regular|senior|expert|lead)",
+        r"(trainee|junior|mid|middle|regular|senior|expert|lead)",
         r"(?:seniority|doświadczenie)\s*[:\-]?\s*"
-        r"(junior|mid|middle|regular|senior|expert|lead)",
+        r"(trainee|stażysta|junior|mid|middle|regular|senior|expert|lead)",
     ]
 
     for pattern in explicit_patterns:
@@ -275,6 +282,8 @@ def find_experience_level(title, lines):
         if match:
             value = match.group(1).lower()
             return {
+                "trainee": "Trainee",
+                "stażysta": "Trainee",
                 "junior": "Junior",
                 "mid": "Mid",
                 "middle": "Mid",
@@ -287,6 +296,8 @@ def find_experience_level(title, lines):
     title_text = (title or "").lower()
     found = []
 
+    if re.search(r"\btrainee\b|\bsta[żz]ysta\b|\bintern\b", title_text, re.IGNORECASE):
+        found.append("Trainee")
     if re.search(r"\bjunior\b", title_text):
         found.append("Junior")
     if re.search(r"\bmid\b", title_text):
@@ -318,20 +329,36 @@ def find_contract_type(lines):
         "uop" in text
         or "uop brutto" in text
         or "umowa o pracę" in text
+        or "umowę o pracę" in text
         or "umowa o prace" in text
+        or "employment contract" in text
+        or "permanent" in text
     ):
         found.append("Umowa o pracę")
 
-    if "umowa zlecenie" in text:
+    if (
+        "uz" in text
+        or "umowa zlecenie" in text
+        or "umowę zlecenie" in text
+        or "mandate contract" in text
+    ):
         found.append("Umowa zlecenie")
 
-    if "umowa o dzieło" in text:
+    if "uod" in text or "umowa o dzieło" in text or "umowę o dzieło" in text:
         found.append("Umowa o dzieło")
 
     if "freelance" in text:
         found.append("Freelance")
 
-    return ", ".join(dict.fromkeys(found)) or None
+    # Fallback stawek godzinowych i dziennych na B2B
+    if not found:
+        if re.search(r"/\s*(?:godz|h|dzień|dzien|day)\b", text, re.IGNORECASE):
+            found.append("B2B")
+
+    if not found:
+        return None
+
+    return ", ".join(dict.fromkeys(found))
 
 
 def normalize_title(title):
@@ -995,10 +1022,10 @@ def scrape_nofluffjobs_details(page, job):
     try:
         response = page.goto(
             url,
-            wait_until="domcontentloaded",
+            wait_until="networkidle",
             timeout=60000,
         )
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(1000)
     except PlaywrightTimeoutError:
         reason = detect_nofluffjobs_block(None, page)
         if reason:
@@ -1155,8 +1182,12 @@ def scrape_nofluffjobs_details(page, job):
 
     salary = find_salary(lines) or job.get("salary")
 
-    # published_at pochodzi tylko ze źródeł strony oferty.
-    published_at = _collect_published_date(page, body_text)
+    # published_at pochodzi ze Schema.org JobPosting lub źródeł strony
+    published_at = None
+    if ld_job_posting and ld_job_posting.get("datePosted"):
+        published_at = _parse_datetime_value(ld_job_posting["datePosted"])
+    if not published_at:
+        published_at = _collect_published_date(page, body_text)
 
     job_description = extract_nofluff_section(
         lines,
