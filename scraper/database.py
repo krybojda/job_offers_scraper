@@ -373,13 +373,18 @@ def mark_missing_jobs(
 def get_jobs_without_details(
     portal,
     limit=20,
+    retry_after_seconds=21600,
 ):
     """
-    Pobiera oferty, które nie mają jeszcze
-    details_scraped_at.
+    Pobiera aktywne oferty wymagające pobrania lub ponownego
+    pobrania szczegółów.
 
-    Zwraca wyłącznie rekordy rzeczywiście istniejące
-    w bazie i sortuje je od najstarszych ID.
+    Nowe oferty są pobierane, gdy details_scraped_at jest NULL.
+    Oferty, które zostały już odwiedzone, ale pozostają
+    niekompletne (details_complete=0), trafiają ponownie do kolejki
+    po upływie retry_after_seconds. Ogranicza to wielokrotne
+    odpytywanie tych samych stron w kolejnych przebiegach, a jednocześnie
+    pozwala uzupełnić dane po chwilowym błędzie/niepełnym renderowaniu.
     """
 
     connection = get_db_connection()
@@ -408,13 +413,22 @@ def get_jobs_without_details(
                 published_at
             FROM jobs
             WHERE portal = %s
-              AND details_scraped_at IS NULL
               AND is_active = 1
+              AND (
+                    details_scraped_at IS NULL
+                    OR (
+                        details_complete = 0
+                        AND details_scraped_at <= DATE_SUB(
+                            NOW(), INTERVAL %s SECOND
+                        )
+                    )
+              )
             ORDER BY id ASC
             LIMIT %s
             """,
             (
                 portal,
+                int(retry_after_seconds),
                 int(limit),
             ),
         )
