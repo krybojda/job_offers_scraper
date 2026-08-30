@@ -1218,6 +1218,26 @@ def scrape_nofluffjobs_details(page, job):
         ],
     )
 
+    # Część ofert No Fluff Jobs nie ma osobnej sekcji „Opis stanowiska”.
+    # Zamiast tego portal publikuje pełną treść pod „Opis wymagań”.
+    # Najpierw próbujemy wyciągnąć właśnie tę sekcję, a dopiero później
+    # używamy listy „Obowiązkowe” jako ostatecznego fallbacku.
+    if not job_description:
+        job_description = extract_nofluff_section(
+            lines,
+            [
+                "opis wymagań", "opis wymagan", "our requirements",
+            ],
+            [
+                "szczegóły oferty", "szczegoly oferty",
+                "o firmie", "about the company", "about us",
+                "benefity", "benefits", "aplikuj", "apply",
+            ],
+        )
+
+    if not job_description and requirements:
+        job_description = requirements
+
     about_company = extract_nofluff_section(
         lines,
         [
