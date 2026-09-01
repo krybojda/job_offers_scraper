@@ -233,77 +233,77 @@ def process_jobs(
     ignored_keywords,
     details_queue,
     total_stats,
+    seen_in_run=None,
 ):
     """
     Zapisuje oferty do MySQL i dodaje je do kolejki
-    szczegółów bez duplikowania source_id.
+    szczeg???w bez duplikowania source_id.
     """
 
-    # Source ID ofert, które już znajdują się
-    # w kolejce szczegółów.
+    # Source ID ofert, kt?re ju? znajduj? si?
+    # w kolejce szczeg???w.
     queued_detail_ids = {
         job["source_id"]
         for job in details_queue
     }
 
     for job in jobs:
+        source_id = job["source_id"]
+
+        # -------------------------------------------------
+        # IGNOROWANE (sprawdza tytu? i poziom do?wiadczenia)
+        # -------------------------------------------------
+        if is_ignored_job(
+            job,
+            ignored_keywords,
+        ):
+            print(
+                "[IGNORUJ] "
+                f"{job['title']} (poziom: {job.get('experience_level')})"
+            )
+            total_stats["ignored"] += 1
+            continue
+
+        # -------------------------------------------------
+        # DEDUPLIKACJA W BIE??CYM PRZEBIEGU
+        # -------------------------------------------------
+        is_already_seen_in_run = (
+            seen_in_run is not None
+            and source_id in seen_in_run
+        )
 
         total_stats["seen"] += 1
 
         # -------------------------------------------------
-        # IGNOROWANE
-        # -------------------------------------------------
-
-        if is_ignored_job(
-            job["title"],
-            ignored_keywords,
-        ):
-
-            print(
-                "[IGNORUJ] "
-                f"{job['title']}"
-            )
-
-            total_stats["ignored"] += 1
-
-            continue
-
-        # -------------------------------------------------
         # ZAPIS / AKTUALIZACJA
         # -------------------------------------------------
-
         result = save_job(
             job
         )
 
-        total_stats["saved"] += 1
+        if not is_already_seen_in_run:
+            total_stats["saved"] += 1
+            if seen_in_run is not None:
+                seen_in_run.add(source_id)
 
         # -------------------------------------------------
-        # SZCZEGÓŁY
+        # SZCZEG??Y
         # -------------------------------------------------
-
-        source_id = job[
-            "source_id"
-        ]
-
         if (
             result.get(
                 "needs_details",
                 False,
             )
-            and source_id
-            not in queued_detail_ids
-            and len(details_queue)
-            < MAX_DETAILS_PER_RUN
+            and source_id not in queued_detail_ids
+            and len(details_queue) < MAX_DETAILS_PER_RUN
         ):
-
             details_queue.append(
                 job
             )
-
             queued_detail_ids.add(
                 source_id
             )
+
 
 # =========================================================
 # RETRY SZCZEGÓŁÓW
