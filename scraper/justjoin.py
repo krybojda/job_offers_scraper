@@ -5,7 +5,7 @@ from urllib.parse import quote, urljoin
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from config import JUSTJOIN_BASE_URL
-from utils import clean_text, generate_source_id
+from utils import clean_text, generate_source_id, normalize_url
 
 
 # =========================================================
@@ -901,7 +901,7 @@ def extract_job_from_raw_item(
     if not href:
         return None
 
-    if "/job-offer/" not in href:
+    if not any(pattern in href for pattern in ("/job-offer/", "/offers/", "/job-offers/")):
         return None
 
     url = urljoin(
@@ -1247,8 +1247,10 @@ def scrape_justjoin_page(
         )
 
         for item in batch:
-            if item.get("href") and item["href"] not in raw_jobs_by_href:
-                raw_jobs_by_href[item["href"]] = item
+            if item.get("href"):
+                item_key = normalize_url(item["href"])
+                if item_key and item_key not in raw_jobs_by_href:
+                    raw_jobs_by_href[item_key] = item
 
         page.evaluate("window.scrollBy(0, 1200)")
         page.wait_for_timeout(1000)

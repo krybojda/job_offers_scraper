@@ -7,7 +7,7 @@ from mysql.connector import Error
 
 def get_db_connection():
     """
-    Tworzy połączenie z MySQL.
+    Tworzy po??czenie z MySQL.
     """
 
     return mysql.connector.connect(
@@ -21,7 +21,7 @@ def get_db_connection():
 
 def wait_for_mysql(max_attempts=10, delay=3):
     """
-    Czeka na dostępność MySQL.
+    Czeka na dost?pno?? MySQL.
     """
 
     for attempt in range(1, max_attempts + 1):
@@ -32,18 +32,27 @@ def wait_for_mysql(max_attempts=10, delay=3):
             if connection.is_connected():
                 connection.close()
 
-                print("Połączenie z MySQL: OK")
+                print("Po??czenie z MySQL: OK")
 
                 return True
 
         except Error as error:
 
             print(
-                f"MySQL niedostępny "
-                f"(próba {attempt}/{max_attempts}): "
+                f"MySQL niedost?pny "
+                f"(pr?ba {attempt}/{max_attempts}): "
                 f"{error}"
             )
 
+            if attempt < max_attempts:
+                time.sleep(delay)
+
+        except Exception as error:
+            print(
+                f"Oczekiwanie na MySQL "
+                f"(pr?ba {attempt}/{max_attempts}): "
+                f"{error}"
+            )
             if attempt < max_attempts:
                 time.sleep(delay)
 
@@ -52,9 +61,10 @@ def wait_for_mysql(max_attempts=10, delay=3):
 
 def save_job(job):
     """
-    Dodaje nową ofertę albo aktualizuje istniejącą.
+    Dodaje now? ofert? albo aktualizuje istniej?c?.
 
-    Szczegóły nigdy nie są kasowane podczas aktualizacji.
+    Szczeg??y nigdy nie s? kasowane podczas aktualizacji.
+    S?owa kluczowe (keyword) s? ??czone bez duplikowania.
     """
 
     connection = get_db_connection()
@@ -127,15 +137,20 @@ def save_job(job):
             )
             ON DUPLICATE KEY UPDATE
                 title = VALUES(title),
-                company = VALUES(company),
-                location = VALUES(location),
-                work_mode = VALUES(work_mode),
-                work_type = VALUES(work_type),
+                company = COALESCE(VALUES(company), company),
+                location = COALESCE(VALUES(location), location),
+                work_mode = COALESCE(VALUES(work_mode), work_mode),
+                work_type = COALESCE(VALUES(work_type), work_type),
                 experience_level = COALESCE(VALUES(experience_level), experience_level),
                 contract_type = COALESCE(VALUES(contract_type), contract_type),
-                salary = VALUES(salary),
+                salary = COALESCE(VALUES(salary), salary),
                 url = VALUES(url),
-                keyword = VALUES(keyword),
+                keyword = CASE
+                    WHEN keyword IS NULL OR keyword = '' THEN VALUES(keyword)
+                    WHEN VALUES(keyword) IS NULL OR VALUES(keyword) = '' THEN keyword
+                    WHEN FIND_IN_SET(VALUES(keyword), REPLACE(keyword, ', ', ',')) > 0 THEN keyword
+                    ELSE CONCAT(keyword, ', ', VALUES(keyword))
+                END,
                 published_at = COALESCE(VALUES(published_at), published_at),
                 last_seen_at = NOW(),
                 is_active = 1,
@@ -146,16 +161,16 @@ def save_job(job):
             job["portal"],
             job["source_id"],
             job["title"],
-            job["company"],
-            job["location"],
-            job["work_mode"],
-            job["work_type"],
+            job.get("company"),
+            job.get("location"),
+            job.get("work_mode"),
+            job.get("work_type"),
             job.get("experience_level"),
             job.get("contract_type"),
-            job["salary"],
+            job.get("salary"),
             job["url"],
-            job["keyword"],
-            job["published_at"],
+            job.get("keyword"),
+            job.get("published_at"),
         )
 
         cursor.execute(
@@ -190,11 +205,11 @@ def save_job_details(
     details,
 ):
     """
-    Zapisuje szczegółowe informacje o ofercie.
+    Zapisuje szczeg??owe informacje o ofercie.
 
     details_scraped_at jest ustawiane TYLKO wtedy,
-    gdy strona szczegółowa została poprawnie odczytana
-    i otrzymaliśmy wynik details.
+    gdy strona szczeg??owa zosta?a poprawnie odczytana
+    i otrzymali?my wynik details.
     """
 
     connection = get_db_connection()
@@ -264,7 +279,7 @@ def save_job_details(
         connection.commit()
 
         print(
-            f"[SZCZEGÓŁY] zapisano: {source_id}"
+            f"[SZCZEG??Y] zapisano: {source_id}"
         )
 
     finally:
@@ -278,10 +293,10 @@ def mark_missing_jobs(
 ):
     """
     Aktualizuje missed_count dla ofert,
-    których nie znaleziono w pełnym przebiegu.
+    kt?rych nie znaleziono w pe?nym przebiegu.
 
-    Funkcja powinna być wywoływana tylko wtedy,
-    gdy cały skan danego portalu zakończył się poprawnie.
+    Funkcja powinna by? wywo?ywana tylko wtedy,
+    gdy ca?y skan danego portalu zako?czy? si? poprawnie.
     """
 
     connection = get_db_connection()
@@ -361,7 +376,7 @@ def mark_missing_jobs(
         connection.commit()
 
         print(
-            "[AKTYWNOŚĆ] "
+            "[AKTYWNO??] "
             f"zaktualizowano portal: {portal}"
         )
 
@@ -376,15 +391,8 @@ def get_jobs_without_details(
     retry_after_seconds=21600,
 ):
     """
-    Pobiera aktywne oferty wymagające pobrania lub ponownego
-    pobrania szczegółów.
-
-    Nowe oferty są pobierane, gdy details_scraped_at jest NULL.
-    Oferty, które zostały już odwiedzone, ale pozostają
-    niekompletne (details_complete=0), trafiają ponownie do kolejki
-    po upływie retry_after_seconds. Ogranicza to wielokrotne
-    odpytywanie tych samych stron w kolejnych przebiegach, a jednocześnie
-    pozwala uzupełnić dane po chwilowym błędzie/niepełnym renderowaniu.
+    Pobiera aktywne oferty wymagaj?ce pobrania lub ponownego
+    pobrania szczeg???w.
     """
 
     connection = get_db_connection()
@@ -436,12 +444,124 @@ def get_jobs_without_details(
         jobs = cursor.fetchall()
 
         print(
-            f"[SZCZEGÓŁY] DB zwróciła: "
-            f"{len(jobs)} ofert bez szczegółów "
+            f"[SZCZEG??Y] DB zwr?ci?a: "
+            f"{len(jobs)} ofert bez szczeg???w "
             f"dla portalu {portal}"
         )
 
         return jobs
+
+    finally:
+        connection.close()
+
+
+def cleanup_ignored_jobs(ignored_keywords):
+    """
+    Dezaktywuje w bazie danych aktywne oferty pasuj?ce do ignorowanych s??w kluczowych.
+    Pozwala to natychmiast ukry? oferty (np. Senior), kt?re zosta?y dodane do bazy
+    przed modyfikacj? ignored_keywords.txt.
+    """
+    if not ignored_keywords:
+        return 0
+
+    from filters import is_ignored_job
+
+    connection = get_db_connection()
+
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT id, portal, source_id, title, experience_level
+            FROM jobs
+            WHERE is_active = 1
+            """
+        )
+        active_jobs = cursor.fetchall()
+
+        to_deactivate = [
+            job["id"]
+            for job in active_jobs
+            if is_ignored_job(job, ignored_keywords)
+        ]
+
+        if to_deactivate:
+            placeholders = ",".join(["%s"] * len(to_deactivate))
+            cursor.execute(
+                f"""
+                UPDATE jobs
+                SET is_active = 0
+                WHERE id IN ({placeholders})
+                """,
+                to_deactivate,
+            )
+            connection.commit()
+            print(
+                f"[FILTR] Dezaktywowano {len(to_deactivate)} ofert "
+                f"w bazie pasuj?cych do ignorowanych s??w kluczowych."
+            )
+
+        return len(to_deactivate)
+
+    finally:
+        connection.close()
+
+
+def deduplicate_existing_jobs():
+    """
+    Dezaktywuje duplikaty ofert w bazie danych (np. ta sama firma, tytu? i portal),
+    pozostawiaj?c najnowszy aktywny rekord.
+    """
+    connection = get_db_connection()
+
+    try:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT portal, LOWER(TRIM(title)) as norm_title, LOWER(TRIM(company)) as norm_company,
+                   title as orig_title, company as orig_company,
+                   COUNT(*) as count, MAX(id) as keep_id
+            FROM jobs
+            WHERE is_active = 1
+              AND company IS NOT NULL
+              AND company != ''
+              AND title IS NOT NULL
+              AND title != ''
+            GROUP BY portal, norm_title, norm_company
+            HAVING count > 1
+            """
+        )
+        duplicate_groups = cursor.fetchall()
+
+        total_deactivated = 0
+        for group in duplicate_groups:
+            cursor.execute(
+                """
+                UPDATE jobs
+                SET is_active = 0
+                WHERE portal = %s
+                  AND LOWER(TRIM(title)) = %s
+                  AND LOWER(TRIM(company)) = %s
+                  AND is_active = 1
+                  AND id != %s
+                """,
+                (
+                    group["portal"],
+                    group["norm_title"],
+                    group["norm_company"],
+                    group["keep_id"],
+                ),
+            )
+            total_deactivated += cursor.rowcount
+
+        if total_deactivated > 0:
+            connection.commit()
+            print(
+                f"[DEDUPLIKACJA] Dezaktywowano {total_deactivated} "
+                "zduplikowanych ofert w bazie."
+            )
+
+        return total_deactivated
 
     finally:
         connection.close()

@@ -20,6 +20,9 @@ from config import (
 )
 
 from database import (
+    cleanup_ignored_jobs,
+    deduplicate_existing_jobs,
+    get_db_connection,
     get_jobs_without_details,
     mark_missing_jobs,
     save_job,
@@ -478,16 +481,30 @@ def retry_details():
                             )
 
                             if details is not None:
-
-                                save_job_details(
-                                    portal=portal,
-                                    source_id=job[
-                                        "source_id"
-                                    ],
-                                    details=details,
-                                )
-
-                                total_processed += 1
+                                merged_job = {**job, **details}
+                                if is_ignored_job(merged_job, ignored_keywords):
+                                    print(
+                                        f"[{portal.upper()}] [IGNORUJ SZCZEG??Y] "
+                                        f"{merged_job.get('title')} "
+                                        f"(poziom: {merged_job.get('experience_level')})"
+                                    )
+                                    conn = get_db_connection()
+                                    try:
+                                        cur = conn.cursor()
+                                        cur.execute(
+                                            "UPDATE jobs SET is_active = 0 WHERE portal = %s AND source_id = %s",
+                                            (portal, job["source_id"]),
+                                        )
+                                        conn.commit()
+                                    finally:
+                                        conn.close()
+                                else:
+                                    save_job_details(
+                                        portal=portal,
+                                        source_id=job["source_id"],
+                                        details=details,
+                                    )
+                                    total_processed += 1
 
                         except block_error as error:
 
@@ -664,14 +681,17 @@ def run_scrape():
     # =====================================================
 
     justjoin_seen_ids = set()
+    justjoin_processed_ids = set()
     justjoin_complete = True
     justjoin_details_queue = []
 
     pracuj_seen_ids = set()
+    pracuj_processed_ids = set()
     pracuj_complete = True
     pracuj_details_queue = []
 
     nofluffjobs_seen_ids = set()
+    nofluffjobs_processed_ids = set()
     nofluffjobs_complete = True
     nofluffjobs_details_queue = []
 
@@ -789,6 +809,7 @@ def run_scrape():
                             total_stats=(
                                 total_stats
                             ),
+                            seen_in_run=justjoin_processed_ids,
                         )
 
                     except PortalBlockedError as error:
@@ -954,6 +975,7 @@ def run_scrape():
                             total_stats=(
                                 total_stats
                             ),
+                            seen_in_run=pracuj_processed_ids,
                         )
 
                         if keyword_completed:
@@ -1144,6 +1166,7 @@ def run_scrape():
                             total_stats=(
                                 total_stats
                             ),
+                            seen_in_run=nofluffjobs_processed_ids,
                         )
 
                         if scan_complete:
@@ -1293,14 +1316,29 @@ def run_scrape():
                         )
 
                         if details is not None:
-
-                            save_job_details(
-                                portal="justjoin",
-                                source_id=job[
-                                    "source_id"
-                                ],
-                                details=details,
-                            )
+                            merged_job = {**job, **details}
+                            if is_ignored_job(merged_job, ignored_keywords):
+                                print(
+                                    f"[JUST JOIN] [IGNORUJ SZCZEG??Y] "
+                                    f"{merged_job.get('title')} "
+                                    f"(poziom: {merged_job.get('experience_level')})"
+                                )
+                                conn = get_db_connection()
+                                try:
+                                    cur = conn.cursor()
+                                    cur.execute(
+                                        "UPDATE jobs SET is_active = 0 WHERE portal = %s AND source_id = %s",
+                                        ("justjoin", job["source_id"]),
+                                    )
+                                    conn.commit()
+                                finally:
+                                    conn.close()
+                            else:
+                                save_job_details(
+                                    portal="justjoin",
+                                    source_id=job["source_id"],
+                                    details=details,
+                                )
 
                     except PortalBlockedError as error:
 
@@ -1467,18 +1505,29 @@ def run_scrape():
                                     )
 
                                     if details is not None:
-
-                                        save_job_details(
-                                            portal=(
-                                                "nofluffjobs"
-                                            ),
-                                            source_id=(
-                                                job[
-                                                    "source_id"
-                                                ]
-                                            ),
-                                            details=details,
-                                        )
+                                        merged_job = {**job, **details}
+                                        if is_ignored_job(merged_job, ignored_keywords):
+                                            print(
+                                                f"[NO FLUFF JOBS] [IGNORUJ SZCZEG??Y] "
+                                                f"{merged_job.get('title')} "
+                                                f"(poziom: {merged_job.get('experience_level')})"
+                                            )
+                                            conn = get_db_connection()
+                                            try:
+                                                cur = conn.cursor()
+                                                cur.execute(
+                                                    "UPDATE jobs SET is_active = 0 WHERE portal = %s AND source_id = %s",
+                                                    ("nofluffjobs", job["source_id"]),
+                                                )
+                                                conn.commit()
+                                            finally:
+                                                conn.close()
+                                        else:
+                                            save_job_details(
+                                                portal="nofluffjobs",
+                                                source_id=job["source_id"],
+                                                details=details,
+                                            )
                                     else:
                                         failed_nofluffjobs_details.append(job)
 
